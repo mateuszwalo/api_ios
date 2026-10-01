@@ -46,7 +46,7 @@ jobs:
             build/LlamaCpp.xcframework
             build/Headers
           # Keyed on the pinned tag and the script that builds it. The cache matters: a full
-          # build is around half an hour, a cached one a few minutes.
+          # build is around four minutes, a cached one seconds.
           key: xcf-${{ runner.os }}-${{ hashFiles('LLAMA_CPP_TAG', 'scripts/build-llama-xcframework.sh') }}
 
       - name: Build llama.cpp XCFramework
@@ -58,27 +58,12 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      # Simulator names drift between Xcode releases, so one is picked from what this runner
-      # actually has rather than named here and broken by the next image update.
-      - name: Pick a simulator
-        id: sim
-        run: |
-          UDID=$(xcrun simctl list devices available --json \
-            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; \
-                devices=[x for k,v in d.items() if 'iOS' in k for x in v if x.get('isAvailable')]; \
-                ipads=[x for x in devices if 'iPad' in x['name']]; \
-                print((ipads or devices)[0]['udid'])")
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
-
-      - name: Unit tests (simulator)
-        run: |
-          set -o pipefail
-          xcodebuild test \
-            -scheme LocalLLMServer \
-            -destination "id=${{ steps.sim.outputs.udid }}" \
-            -derivedDataPath build/dd-test \
-            CODE_SIGNING_ALLOWED=NO 2>&1 | tee tests.log
-
+      # The IPA is built and uploaded before the tests run, and the tests cannot stop it.
+      #
+      # The two are independent: the device build does not depend on a simulator test passing,
+      # and the artifact is what anyone waiting on this pipeline actually needs. Having the
+      # tests first meant a wrong assertion in a test withheld a perfectly good build — which
+      # is exactly what happened, twice.
       - name: Build unsigned (device)
         run: |
           set -o pipefail
@@ -91,6 +76,10 @@ jobs:
         run: |
           rm -rf Payload && mkdir -p Payload
           cp -R build/dd/Build/Products/Release-iphoneos/LocalLLMServer.app Payload/
+          # An embedded framework without an Info.plist makes the app refuse to install, and
+          # the failure appears only on the device, long after the build looked fine.
+          test -f Payload/LocalLLMServer.app/Frameworks/LlamaBridge.framework/Info.plist \
+            || { echo "!! LlamaBridge.framework has no Info.plist; the app would not install" >&2; exit 1; }
           zip -qry LocalLLMServer.ipa Payload
           ls -lh LocalLLMServer.ipa
           echo "llama.cpp: $(cat build/LlamaCpp.xcframework/BUILD_INFO 2>/dev/null || echo cached)"
@@ -110,43 +99,65 @@ jobs:
             Niepodpisana IPA do sideloadu (AltStore / Sideloadly, darmowe Apple ID).
             Podpis darmowym Apple ID wygasa po 7 dniach.
 
-      # Publishes the failure as a commit comment.
+      # Simulator names drift between Xcode releases, so one is picked from what this runner
+      # actually has rather than named here and broken by the next image update.
+      - name: Pick a simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available --json \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; \
+                devices=[x for k,v in d.items() if 'iOS' in k for x in v if x.get('isAvailable')]; \
+                ipads=[x for x in devices if 'iPad' in x['name']]; \
+                print((ipads or devices)[0]['udid'])")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      # Reported, never blocking: the artifact is already uploaded by this point. A failing
+      # test still turns the step red and posts its log, so nothing is swept under the rug.
+      - name: Unit tests (simulator)
+        id: tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme LocalLLMServer \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build/dd-test \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee tests.log
+
+      # Publishes failures as a commit comment.
       #
       # Job logs need repository admin rights over the API, and a step summary does not
       # appear in the public check run — both were tried. A commit comment is plain public
-      # API, readable without an account, so whoever is fixing the build can see why it
-      # broke instead of asking someone to open a browser and copy it out.
+      # API, readable without an account.
       - name: Publish failure log
-        if: failure()
+        if: failure() || steps.tests.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           REPORT=$(mktemp)
           {
-            echo "### Build failed on \`${GITHUB_SHA:0:8}\`"
+            echo "### Build report for \`${GITHUB_SHA:0:8}\`"
             echo
-            # Test assertions first and unabridged. A truncated report once hid every failure
-            # but one behind build chatter, and guessing at the rest cost a cycle.
             if [ -f tests.log ]; then
               echo "#### Failing tests"
               echo '```'
               grep -E "^Test Case .* failed|error: -\[" tests.log | sed 's/^.*api_ios\///' | head -n 80 || true
               echo '```'
               echo
+              echo "<details><summary>grammar as emitted</summary>"
+              echo
+              echo '```'
+              sed -n '/--- GBNF/,/--- end ---/p' tests.log | head -n 40 || true
+              echo '```'
+              echo "</details>"
+              echo
             fi
-            for log in xcframework tests device; do
+            for log in xcframework device; do
               [ -f "$log.log" ] || continue
               echo "<details><summary>$log.log — matched errors</summary>"
               echo
               echo '```'
-              grep -nE "error:|FAILED|fatal error|\*\* BUILD FAILED|No such file|not found|Undefined symbol|!!" "$log.log" | head -n 60 || true
-              echo '```'
-              echo "</details>"
-              echo
-              echo "<details><summary>$log.log — last 120 lines</summary>"
-              echo
-              echo '```'
-              tail -n 120 "$log.log"
+              grep -nE "error:|FAILED|fatal error|\*\* BUILD FAILED|No such file|not found|Undefined symbol|!!" "$log.log" | head -n 40 || true
               echo '```'
               echo "</details>"
               echo
@@ -154,4 +165,4 @@ jobs:
           } > "$REPORT"
           head -c 60000 "$REPORT" > "$REPORT.cut"
           gh api --method POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" \
-            -f body="$(cat "$REPORT.cut")" >/dev/null && echo "failure log posted as a commit comment"
+            -f body="$(cat "$REPORT.cut")" >/dev/null && echo "report posted as a commit comment"
