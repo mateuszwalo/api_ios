@@ -41,48 +41,48 @@ stage_headers() {
   local hdr="$OUT_DIR/Headers"
   rm -rf "$hdr"; mkdir -p "$hdr/nlohmann"
 
-  copy_first() {
-    local label="$1"; shift
-    for candidate in "$@"; do
-      if [ -f "$candidate" ]; then
-        cp "$candidate" "$hdr/"
-        echo "    $label <- ${candidate#$SRC/}"
-        return 0
-      fi
-    done
-    echo "    !! $label not found; looked in:" >&2
-    for candidate in "$@"; do echo "       ${candidate#$SRC/}" >&2; done
-    return 1
-  }
-
+  # Whole directories, not a hand-picked list.
+  #
+  # Picking individual files cost a build: json-schema-to-grammar.h includes json-schema.h,
+  # which was not on the list, and the failure surfaced two steps later as a missing header
+  # during the Swift build. These headers include one another freely and the set changes
+  # between releases, so copying the directories is both shorter and the only version that
+  # stays correct across a tag bump.
   echo "==> staging headers"
-  cp "$SRC"/include/llama.h "$hdr/"
+  cp "$SRC"/include/*.h "$hdr/"
   cp "$SRC"/ggml/include/*.h "$hdr/"
+  cp "$SRC"/common/*.h "$hdr/" 2>/dev/null || true
+  cp "$SRC"/common/*.hpp "$hdr/" 2>/dev/null || true
 
-  copy_first "mtmd.h"        "$SRC/tools/mtmd/mtmd.h" "$SRC/mtmd/mtmd.h" "$SRC/examples/llava/mtmd.h"
-  copy_first "mtmd-helper.h" "$SRC/tools/mtmd/mtmd-helper.h" "$SRC/mtmd/mtmd-helper.h" || true
-  copy_first "json-schema-to-grammar.h" "$SRC/common/json-schema-to-grammar.h"
-  copy_first "common.h"      "$SRC/common/common.h"
-  copy_first "sampling.h"    "$SRC/common/sampling.h" || true
-
-  local json_found=0
-  for candidate in "$SRC/vendor/nlohmann/json.hpp" "$SRC/common/json.hpp" "$SRC/examples/server/json.hpp"; do
-    if [ -f "$candidate" ]; then
-      cp "$candidate" "$hdr/nlohmann/"
-      [ -f "${candidate%/*}/json_fwd.hpp" ] && cp "${candidate%/*}/json_fwd.hpp" "$hdr/nlohmann/"
-      echo "    nlohmann/json.hpp <- ${candidate#$SRC/}"
-      json_found=1
-      break
-    fi
+  local mtmd_dir=""
+  for candidate in "$SRC/tools/mtmd" "$SRC/mtmd" "$SRC/examples/llava"; do
+    if [ -f "$candidate/mtmd.h" ]; then mtmd_dir="$candidate"; break; fi
   done
-  if [ "$json_found" -eq 0 ]; then
-    echo "    !! nlohmann/json.hpp not found; searching:" >&2
-    find "$SRC" -name 'json.hpp' -maxdepth 4 >&2 || true
+  if [ -z "$mtmd_dir" ]; then
+    echo "!! mtmd.h not found anywhere; vision cannot be built" >&2
+    find "$SRC" -name 'mtmd*.h' | head -n 20 >&2
     exit 1
   fi
+  cp "$mtmd_dir"/*.h "$hdr/"
+  echo "    mtmd headers <- ${mtmd_dir#$SRC/}"
+
+  local json_dir=""
+  for candidate in "$SRC/vendor/nlohmann" "$SRC/common" "$SRC/examples/server"; do
+    if [ -f "$candidate/json.hpp" ]; then json_dir="$candidate"; break; fi
+  done
+  if [ -z "$json_dir" ]; then
+    echo "!! nlohmann/json.hpp not found:" >&2
+    find "$SRC" -name 'json.hpp' | head -n 20 >&2
+    exit 1
+  fi
+  cp "$json_dir"/json*.hpp "$hdr/nlohmann/"
+  echo "    nlohmann <- ${json_dir#$SRC/}"
+
+  # Some headers reach for <nlohmann/json.hpp> and some for "json.hpp"; satisfy both.
+  cp "$json_dir"/json*.hpp "$hdr/" 2>/dev/null || true
 
   echo "==> staged:"
-  ls "$hdr" "$hdr/nlohmann"
+  ls "$hdr"
 }
 
 # --- slices ------------------------------------------------------------------
