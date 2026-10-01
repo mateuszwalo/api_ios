@@ -15,10 +15,14 @@ struct SelfTest: Sendable {
     let grammar: GrammarCompiler
 
     func run() async -> Data {
+        // `?? NSNull()` would not type-check against a `String?`: the two sides of the
+        // operator must agree, and `Any` is not inferred through it.
+        let modelName: Any = await engine.loadedModelName.map { $0 as Any } ?? NSNull()
+
         var report: [String: Any] = [
             "generated_at": ISO8601DateFormatter().string(from: Date()),
             "model_loaded": await engine.isLoaded,
-            "model": await engine.loadedModelName ?? NSNull(),
+            "model": modelName,
             "context_length": await engine.contextLength,
             "supports_images": await engine.supportsImages,
             "footprint_bytes": MemoryProbe.footprintBytes(),

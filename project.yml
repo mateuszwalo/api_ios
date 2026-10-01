@@ -35,7 +35,12 @@ targets:
         CLANG_CXX_LANGUAGE_STANDARD: "c++17"
         CLANG_CXX_LIBRARY: "libc++"
         GCC_C_LANGUAGE_STANDARD: c11
-        HEADER_SEARCH_PATHS: ["$(inherited)", "$(SRCROOT)/build/Headers"]
+        # build/Headers holds the staged llama.cpp headers; the second entry lets the
+        # implementation find its own umbrella header, which lives in a subdirectory.
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/build/Headers"
+          - "$(SRCROOT)/Sources/LlamaBridge/include"
         # The bridge throws std::exception across its own frames when a schema cannot be
         # converted; without this the conversion failure becomes a crash.
         GCC_ENABLE_CPP_EXCEPTIONS: YES

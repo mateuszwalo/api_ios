@@ -118,18 +118,34 @@ build_slice() {
   #
   # `LLAMA_BUILD_TOOLS` stays at its default on purpose: mtmd lives under tools/, and
   # turning tools off takes the whole vision path with it.
-  echo "==> targets in the generated project:"
-  xcodebuild -list -project "$dir/llama.cpp.xcodeproj" > "$dir/targets.txt" 2>&1 || true
-  sed -n '/Targets:/,$p' "$dir/targets.txt" | head -n 40
+  local project
+  project=$(find "$dir" -maxdepth 1 -name '*.xcodeproj' | head -n 1)
+  echo "==> generated project: ${project:-none found}"
+  : > "$dir/targets.txt"
+  [ -n "$project" ] && xcodebuild -list -project "$project" > "$dir/targets.txt" 2>&1 || true
+  echo "==> targets:"
+  cat "$dir/targets.txt"
 
-  if ! grep -qw "mtmd" "$dir/targets.txt"; then
-    echo "!! the mtmd target is missing: no multimodal projector support could be built," >&2
-    echo "   which means vision requests would be refused on the device." >&2
+  # Build the libraries by name rather than ALL_BUILD, and take the names from what was
+  # actually generated. Hard-coding them cost a build once already: a guard asserting a
+  # target called exactly `mtmd` failed the whole run on a naming assumption.
+  local targets=""
+  for candidate in llama common mtmd; do
+    if grep -qE "^[[:space:]]*${candidate}[[:space:]]*$" "$dir/targets.txt"; then
+      targets="$targets $candidate"
+    else
+      echo "    note: no target named exactly '$candidate'; near matches:"
+      grep -i "$candidate" "$dir/targets.txt" | sed 's|^|      |' || echo "      (none)"
+    fi
+  done
+  if [ -z "$targets" ]; then
+    echo "!! none of llama, common or mtmd exist as targets; see the list above" >&2
     exit 1
   fi
 
-  echo "==> building $name (llama, common, mtmd)"
-  cmake --build "$dir" --config Release --target llama common mtmd
+  echo "==> building $name:$targets"
+  # shellcheck disable=SC2086
+  cmake --build "$dir" --config Release $(for t in $targets; do printf -- '--target %s ' "$t"; done)
 
   # One fat static library per slice: an xcframework will not take a pile of .a files.
   local libs
@@ -141,6 +157,15 @@ build_slice() {
   fi
   echo "==> merging:"
   echo "$libs" | sed 's|^|    |'
+
+  # Vision is not optional here: a build without mtmd would install happily and refuse every
+  # request carrying an image. Better to fail now, with the target list above in the log.
+  if ! echo "$libs" | grep -qi 'mtmd'; then
+    echo "!! no mtmd library was produced; vision would be unavailable on the device" >&2
+    echo "   targets that were generated:" >&2
+    cat "$dir/targets.txt" >&2
+    exit 1
+  fi
   # shellcheck disable=SC2086
   libtool -static -o "$dir/libllamacpp.a" $libs
 }

@@ -11,6 +11,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Only so a failed build can post its own log as a commit comment. See the failure step.
+permissions:
+  contents: write
+
 jobs:
 
   # A minute, and it answers the one question that cannot be answered anywhere else:
@@ -106,25 +110,39 @@ jobs:
             Niepodpisana IPA do sideloadu (AltStore / Sideloadly, darmowe Apple ID).
             Podpis darmowym Apple ID wygasa po 7 dniach.
 
-      # Job logs need repository admin rights to fetch over the API, but the step summary is
-      # part of the public check run. Putting the failure here is what lets whoever is fixing
-      # the build read it without an account, which is the difference between an iteration
-      # that takes minutes and one that takes a round trip through another person.
-      - name: Failure report
+      # Publishes the failure as a commit comment.
+      #
+      # Job logs need repository admin rights over the API, and a step summary does not
+      # appear in the public check run — both were tried. A commit comment is plain public
+      # API, readable without an account, so whoever is fixing the build can see why it
+      # broke instead of asking someone to open a browser and copy it out.
+      - name: Publish failure log
         if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          REPORT=$(mktemp)
           {
-            echo "## Build failed"
+            echo "### Build failed on \`${GITHUB_SHA:0:8}\`"
+            echo
             for log in xcframework tests device; do
-              if [ -f "$log.log" ]; then
-                echo "### $log.log (errors)"
-                echo '```'
-                grep -nE "error:|FAILED|fatal error|\*\* BUILD FAILED|No such file|not found|Undefined symbol" "$log.log" | head -n 60 || true
-                echo '```'
-                echo "### $log.log (tail)"
-                echo '```'
-                tail -n 80 "$log.log"
-                echo '```'
-              fi
+              [ -f "$log.log" ] || continue
+              echo "<details><summary>$log.log — matched errors</summary>"
+              echo
+              echo '```'
+              grep -nE "error:|FAILED|fatal error|\*\* BUILD FAILED|No such file|not found|Undefined symbol|!!" "$log.log" | head -n 60 || true
+              echo '```'
+              echo "</details>"
+              echo
+              echo "<details><summary>$log.log — last 120 lines</summary>"
+              echo
+              echo '```'
+              tail -n 120 "$log.log"
+              echo '```'
+              echo "</details>"
+              echo
             done
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > "$REPORT"
+          head -c 60000 "$REPORT" > "$REPORT.cut"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" \
+            -f body="$(cat "$REPORT.cut")" >/dev/null && echo "failure log posted as a commit comment"
