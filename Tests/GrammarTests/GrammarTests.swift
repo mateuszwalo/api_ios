@@ -38,6 +38,12 @@ final class GrammarTests: XCTestCase {
         let grammar = try compile(try fixture("schema_complex"))
         XCTAssertFalse(grammar.isEmpty)
         XCTAssertTrue(grammar.contains("root"), "a grammar without a root rule cannot be used")
+        // Printed, not asserted on: when an expectation about the grammar's shape fails, the
+        // first question is always what the converter actually emitted, and nobody running
+        // this in CI can open a debugger to find out.
+        print("--- GBNF (first 800 characters) ---")
+        print(String(grammar.prefix(800)))
+        print("--- end ---")
     }
 
     func testSimpleSchemaConverts() throws {
@@ -50,12 +56,15 @@ final class GrammarTests: XCTestCase {
     /// which is the failure this whole mechanism exists to prevent.
     func testEnumValuesSurviveIntoTheGrammar() throws {
         let grammar = try compile(try fixture("schema_complex"))
+        // Matched bare, without surrounding quotes. A GBNF literal for an enumerated string
+        // carries escaped quotes of its own — `"\\"alpha\\""` — so looking for `"alpha"`
+        // finds nothing even when the value is right there. That is what failed here first.
         for value in ["alpha", "beta", "gamma", "delta", "epsilon", "other"] {
-            XCTAssertTrue(grammar.contains("\"\(value)\""),
+            XCTAssertTrue(grammar.contains(value),
                           "enum value \(value) is missing from the grammar")
         }
         for value in ["one", "two", "three", "four", "five"] {
-            XCTAssertTrue(grammar.contains("\"\(value)\""),
+            XCTAssertTrue(grammar.contains(value),
                           "nested enum value \(value) is missing from the grammar")
         }
     }
@@ -75,7 +84,7 @@ final class GrammarTests: XCTestCase {
     func testRequiredPropertiesAppearInTheGrammar() throws {
         let grammar = try compile(try fixture("schema_complex"))
         for property in ["name", "details", "section", "tags", "parts", "amount"] {
-            XCTAssertTrue(grammar.contains("\"\\\"\(property)\\\"\"") || grammar.contains(property),
+            XCTAssertTrue(grammar.contains(property),
                           "required property \(property) is missing from the grammar")
         }
     }

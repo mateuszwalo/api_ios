@@ -125,6 +125,15 @@ jobs:
           {
             echo "### Build failed on \`${GITHUB_SHA:0:8}\`"
             echo
+            # Test assertions first and unabridged. A truncated report once hid every failure
+            # but one behind build chatter, and guessing at the rest cost a cycle.
+            if [ -f tests.log ]; then
+              echo "#### Failing tests"
+              echo '```'
+              grep -E "^Test Case .* failed|error: -\[" tests.log | sed 's/^.*api_ios\///' | head -n 80 || true
+              echo '```'
+              echo
+            fi
             for log in xcframework tests device; do
               [ -f "$log.log" ] || continue
               echo "<details><summary>$log.log — matched errors</summary>"
