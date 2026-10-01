@@ -5,14 +5,14 @@
 #import <time.h>
 
 #include <string>
-#include <type_traits>
 #include <vector>
 
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+// Pulls in common_json. llama.cpp replaced nlohmann in this interface: the converter now
+// takes the project's own JSON type, so there is no nlohmann include here any more.
 #include "json-schema-to-grammar.h"
-#include "nlohmann/json.hpp"
 
 NSErrorDomain const LLMBridgeErrorDomain = @"LLMBridgeErrorDomain";
 
@@ -22,43 +22,14 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
                            userInfo:@{NSLocalizedDescriptionKey: message ?: @"unknown error"}];
 }
 
-#pragma mark - Compatibility shims
+#pragma mark - Pinned API notes
 
-// The llama.cpp API is stable in substance but not in spelling: `flash_attn` became
-// `flash_attn_type`, and the KV cache accessors were renamed when the memory abstraction
-// landed. Detecting the shape at compile time keeps this file building across a tag bump
-// rather than failing on a field name, and a tag bump is expected: the tag is pinned
-// deliberately (docs/DECISIONS.md) and will be raised from time to time.
-
-template <typename T, typename = void>
-struct HasFlashAttnBool : std::false_type {};
-template <typename T>
-struct HasFlashAttnBool<T, std::void_t<decltype(std::declval<T &>().flash_attn)>> : std::true_type {};
-
-template <typename T, typename = void>
-struct HasFlashAttnType : std::false_type {};
-template <typename T>
-struct HasFlashAttnType<T, std::void_t<decltype(std::declval<T &>().flash_attn_type)>> : std::true_type {};
-
-static void ApplyFlashAttention(llama_context_params &params, bool enabled) {
-    if constexpr (HasFlashAttnType<llama_context_params>::value) {
-        params.flash_attn_type = enabled ? LLAMA_FLASH_ATTN_TYPE_ENABLED
-                                         : LLAMA_FLASH_ATTN_TYPE_DISABLED;
-    } else if constexpr (HasFlashAttnBool<llama_context_params>::value) {
-        params.flash_attn = enabled;
-    }
-}
-
-template <typename Ctx>
-static auto ClearKVCacheImpl(Ctx *ctx, int)
-    -> decltype(llama_memory_clear(llama_get_memory(ctx), true), void()) {
-    llama_memory_clear(llama_get_memory(ctx), true);
-}
-template <typename Ctx>
-static auto ClearKVCacheImpl(Ctx *ctx, long) -> void {
-    llama_kv_self_clear(ctx);
-}
-static void ClearKVCache(llama_context *ctx) { ClearKVCacheImpl(ctx, 0); }
+// This file is written against the exact llama.cpp tag in LLAMA_CPP_TAG, and the few places
+// where that matters are called out where they appear. An earlier version tried to detect
+// the API shape at compile time with `if constexpr`; that was the wrong instinct twice over.
+// In a non-template function `if constexpr` discards nothing, so the dead branch still has
+// to compile — which is exactly how it failed — and the hedging hid which API was actually
+// in use. A pinned dependency should be read, not guessed at.
 
 #pragma mark - Value types
 
@@ -165,9 +136,11 @@ static void ClearKVCache(llama_context *ctx) { ClearKVCacheImpl(ctx, 0); }
         return nil;
     }
     try {
-        // `ordered_json`, not `json`: the converter emits grammar alternatives in property
-        // order, and sorting the keys would change which outputs are accepted.
-        auto schema = nlohmann::ordered_json::parse(schemaJSON.UTF8String);
+        // common_json, not nlohmann: llama.cpp carries its own JSON type now, and
+        // json_schema_to_grammar takes that. Its parser preserves property order, which
+        // matters — the converter emits object rules in the order the properties appear,
+        // and reordering them changes which outputs the grammar accepts.
+        common_json schema = common_json::parse(std::string(schemaJSON.UTF8String));
         std::string gbnf = json_schema_to_grammar(schema);
         if (gbnf.empty()) {
             if (error) *error = MakeError(LLMBridgeErrorGrammarInvalid,
@@ -201,7 +174,9 @@ static void ClearKVCache(llama_context *ctx) { ClearKVCacheImpl(ctx, 0); }
         // Everything on the GPU. A partially offloaded model on Apple silicon is slower
         // than either extreme, and unified memory makes the split pointless anyway.
         mparams.n_gpu_layers = 999;
-        mparams.use_mmap = _options.useMemoryMapping;
+        // Memory mapping is selected through load_mode; the old use_mmap flag is gone.
+        mparams.load_mode = _options.useMemoryMapping ? LLAMA_LOAD_MODE_MMAP
+                                                      : LLAMA_LOAD_MODE_NONE;
 
         _model = llama_model_load_from_file(modelPath.fileSystemRepresentation, mparams);
         if (_model == nullptr) {
@@ -219,7 +194,8 @@ static void ClearKVCache(llama_context *ctx) { ClearKVCacheImpl(ctx, 0); }
                                       ? _options.threadCount
                                       : NSProcessInfo.processInfo.activeProcessorCount);
         cparams.n_threads_batch = cparams.n_threads;
-        ApplyFlashAttention(cparams, _options.flashAttention);
+        cparams.flash_attn_type = _options.flashAttention ? LLAMA_FLASH_ATTN_TYPE_ENABLED
+                                                          : LLAMA_FLASH_ATTN_TYPE_DISABLED;
 
         _ctx = llama_init_from_model(_model, cparams);
         if (_ctx == nullptr) {
@@ -384,18 +360,25 @@ static void ClearKVCache(llama_context *ctx) { ClearKVCacheImpl(ctx, 0); }
                          prompt:(const std::string &)prompt
                          chunks:(mtmd_input_chunks **)outChunks
                           error:(NSError **)error {
+    // The helper returns a wrapper rather than a bitmap: it can also open a video, in which
+    // case it hands back a decoder context that owns the frames. Images never produce one,
+    // and this server rejects anything but an image, but the context is released anyway so
+    // the invariant does not depend on that staying true.
     std::vector<mtmd_bitmap *> bitmaps;
+    const mtmd_helper_init_opt bitmapOptions = mtmd_helper_init_opt_default();
     for (LLMTurn *turn in turns) {
         for (LLMImage *image in turn.images) {
-            mtmd_bitmap *bmp = mtmd_helper_bitmap_init_from_buf(
-                _mtmd, (const unsigned char *)image.data.bytes, image.data.length);
-            if (bmp == nullptr) {
+            mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_buf(
+                _mtmd, (const unsigned char *)image.data.bytes, image.data.length,
+                /*placeholder=*/false, bitmapOptions);
+            if (wrapper.video_ctx != nullptr) mtmd_helper_video_free(wrapper.video_ctx);
+            if (wrapper.bitmap == nullptr) {
                 for (auto *b : bitmaps) mtmd_bitmap_free(b);
                 if (error) *error = MakeError(LLMBridgeErrorImageRejected,
                                               @"the image could not be decoded");
                 return -1;
             }
-            bitmaps.push_back(bmp);
+            bitmaps.push_back(wrapper.bitmap);
         }
     }
 
@@ -445,7 +428,7 @@ static void ClearKVCache(llama_context *ctx) { ClearKVCacheImpl(ctx, 0); }
         // A cold cache unless reuse was asked for: otherwise the measured prefill depends
         // on whatever request happened to run before this one.
         if (!_options.reuseKVCacheBetweenRequests) {
-            ClearKVCache(_ctx);
+            llama_memory_clear(llama_get_memory(_ctx), true);
         }
 
         BOOL hasImages = NO;
@@ -599,7 +582,7 @@ static void ClearKVCache(llama_context *ctx) { ClearKVCacheImpl(ctx, 0); }
         if (tFirstToken == 0) tFirstToken = tEnd;
 
         if (!_options.reuseKVCacheBetweenRequests) {
-            ClearKVCache(_ctx);
+            llama_memory_clear(llama_get_memory(_ctx), true);
         }
 
         LLMGenerationResult *result = [LLMGenerationResult new];
