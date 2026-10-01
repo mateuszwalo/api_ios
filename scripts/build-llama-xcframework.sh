@@ -183,15 +183,28 @@ build_slice() {
     exit 1
   fi
 
+  # shellcheck disable=SC2086
+  libtool -static -o "$dir/libllamacpp.a" $libs
+
   # Check the symbols this project actually calls, here rather than at link time.
   #
   # A missing library does not announce itself: the merge succeeds, the xcframework is
   # produced, and the absence turns up minutes later as undefined symbols in a log that
-  # points at the caller rather than the cause. These three cover the parts of llama.cpp
-  # that nothing else would reveal until the device refused a request.
-  echo "==> checking symbols"
+  # points at the caller rather than the cause.
+  #
+  # Note the position: after the merge, not before it. The first version of this check sat
+  # above libtool and read a file that did not exist yet, so it reported every symbol as
+  # missing and failed a build that was otherwise fine. A guard that cannot tell "absent"
+  # from "could not look" is worse than no guard, so an unreadable archive is now its own
+  # error.
+  echo "==> checking symbols in the merged library"
   local symbols
-  symbols=$(nm -gU "$dir/libllamacpp.a" 2>/dev/null || true)
+  symbols=$(nm -g "$dir/libllamacpp.a" 2>/dev/null || true)
+  if [ -z "$symbols" ]; then
+    echo "!! nm read no symbols from $dir/libllamacpp.a" >&2
+    ls -l "$dir/libllamacpp.a" >&2 || true
+    exit 1
+  fi
   local missing=""
   for symbol in json_schema_to_grammar llama_sampler_init_grammar mtmd_tokenize llama_model_chat_template; do
     if echo "$symbols" | grep -q "$symbol"; then
@@ -206,8 +219,6 @@ build_slice() {
     echo "   built targets:$targets" >&2
     exit 1
   fi
-  # shellcheck disable=SC2086
-  libtool -static -o "$dir/libllamacpp.a" $libs
 }
 
 stage_headers
