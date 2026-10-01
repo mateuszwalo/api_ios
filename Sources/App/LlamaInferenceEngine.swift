@@ -69,7 +69,7 @@ actor LlamaInferenceEngine: InferenceEngine {
     /// seeing the text is the only way to settle a template mismatch.
     func renderedPromptText(_ prompt: EnginePrompt) async -> String? {
         let turns = Self.turns(from: prompt)
-        return try? await onWorker { [bridge] in bridge.renderedPrompt(forTurns: turns) }
+        return try? await onWorker { [bridge] in bridge.renderedPrompt(for: turns) }
     }
 
     func generate(_ request: EngineRequest) async throws -> EngineResult {
@@ -91,7 +91,7 @@ actor LlamaInferenceEngine: InferenceEngine {
                     // Imported as throwing: the Objective-C method returns a nullable object
                     // with an NSError out-parameter, which is the convention Swift folds into
                     // `throws`. The NSError still arrives, as the thrown value.
-                    let r = try bridge.generate(withTurns: turns,
+                    let r = try bridge.generate(with: turns,
                                                 options: opts,
                                                 isCancelled: { cancelled.isSet })
                     return EngineResult(text: r.text,

@@ -80,7 +80,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 extern NSErrorDomain const LLMBridgeErrorDomain;
 
-typedef NS_ERROR_ENUM(LLMBridgeErrorDomain, LLMBridgeErrorCode) {
+/// A plain NS_ENUM rather than NS_ERROR_ENUM, so the Swift name is predictable.
+///
+/// NS_ERROR_ENUM does not import under the name written here: it produces a wrapper type
+/// with the codes nested inside it, and Swift could not find `LLMBridgeErrorCode` at all.
+/// With NS_ENUM the type keeps its name and the cases lose the shared prefix, which is the
+/// spelling the Swift side already expects.
+typedef NS_ENUM(NSInteger, LLMBridgeErrorCode) {
     LLMBridgeErrorModelLoadFailed = 1,
     LLMBridgeErrorProjectorLoadFailed,
     LLMBridgeErrorNotLoaded,

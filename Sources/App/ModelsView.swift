@@ -111,7 +111,7 @@ private struct ModelRow: View {
             Text(MemoryProbe.format(pair.totalBytes) +
                  (pair.supportsVision ? " · with projector" : " · text only, no projector"))
                 .font(.footnote)
-                .foregroundStyle(pair.supportsVision ? .secondary : .orange)
+                .foregroundStyle(pair.supportsVision ? Color.secondary : Color.orange)
 
             HStack {
                 Button(isLoaded ? "Unload" : "Load") {
