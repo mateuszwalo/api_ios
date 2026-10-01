@@ -13,8 +13,8 @@ concurrency:
 
 jobs:
 
-  # Sonda: 1-2 minuty, potwierdza ze runner macOS jest w ogole dostepny
-  # i jakie ma Xcode/CMake. Uruchamiac PIERWSZE na nowym repo.
+  # A minute, and it answers the one question that cannot be answered anywhere else:
+  # whether this account has macOS runners at all.
   probe:
     runs-on: macos-15
     steps:
@@ -27,7 +27,7 @@ jobs:
   build:
     needs: probe
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -41,13 +41,15 @@ jobs:
           path: |
             build/LlamaCpp.xcframework
             build/Headers
-          # Klucz = przypiety tag + skrypt budujacy. Cache jest tu istotny kosztowo:
-          # pelny build to ~30 min, z cache'em caly job schodzi do kilku minut.
+          # Keyed on the pinned tag and the script that builds it. The cache matters: a full
+          # build is around half an hour, a cached one a few minutes.
           key: xcf-${{ runner.os }}-${{ hashFiles('LLAMA_CPP_TAG', 'scripts/build-llama-xcframework.sh') }}
 
       - name: Build llama.cpp XCFramework
         if: steps.xcf-cache.outputs.cache-hit != 'true'
-        run: scripts/build-llama-xcframework.sh
+        run: |
+          set -o pipefail
+          scripts/build-llama-xcframework.sh 2>&1 | tee xcframework.log
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -63,22 +65,23 @@ jobs:
                 ipads=[x for x in devices if 'iPad' in x['name']]; \
                 print((ipads or devices)[0]['udid'])")
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
-          xcrun simctl list devices available | grep "$UDID" || true
 
       - name: Unit tests (simulator)
         run: |
+          set -o pipefail
           xcodebuild test \
             -scheme LocalLLMServer \
             -destination "id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath build/dd-test \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee tests.log
 
       - name: Build unsigned (device)
         run: |
+          set -o pipefail
           xcodebuild -scheme LocalLLMServer -configuration Release -sdk iphoneos \
             -derivedDataPath build/dd \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            ENABLE_BITCODE=NO
+            ENABLE_BITCODE=NO 2>&1 | tee device.log
 
       - name: Package IPA
         run: |
@@ -102,3 +105,26 @@ jobs:
           body: |
             Niepodpisana IPA do sideloadu (AltStore / Sideloadly, darmowe Apple ID).
             Podpis darmowym Apple ID wygasa po 7 dniach.
+
+      # Job logs need repository admin rights to fetch over the API, but the step summary is
+      # part of the public check run. Putting the failure here is what lets whoever is fixing
+      # the build read it without an account, which is the difference between an iteration
+      # that takes minutes and one that takes a round trip through another person.
+      - name: Failure report
+        if: failure()
+        run: |
+          {
+            echo "## Build failed"
+            for log in xcframework tests device; do
+              if [ -f "$log.log" ]; then
+                echo "### $log.log (errors)"
+                echo '```'
+                grep -nE "error:|FAILED|fatal error|\*\* BUILD FAILED|No such file|not found|Undefined symbol" "$log.log" | head -n 60 || true
+                echo '```'
+                echo "### $log.log (tail)"
+                echo '```'
+                tail -n 80 "$log.log"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

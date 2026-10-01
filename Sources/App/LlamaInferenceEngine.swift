@@ -88,13 +88,12 @@ actor LlamaInferenceEngine: InferenceEngine {
         do {
             return try await withTaskCancellationHandler {
                 try await onWorker { [bridge] in
-                    var error: NSError?
-                    guard let r = bridge.generate(withTurns: turns,
-                                                  options: opts,
-                                                  isCancelled: { cancelled.isSet },
-                                                  error: &error) else {
-                        throw error ?? EngineError.backend("generation failed")
-                    }
+                    // Imported as throwing: the Objective-C method returns a nullable object
+                    // with an NSError out-parameter, which is the convention Swift folds into
+                    // `throws`. The NSError still arrives, as the thrown value.
+                    let r = try bridge.generate(withTurns: turns,
+                                                options: opts,
+                                                isCancelled: { cancelled.isSet })
                     return EngineResult(text: r.text,
                                         promptTokens: r.promptTokens,
                                         completionTokens: r.completionTokens,
@@ -194,9 +193,11 @@ final class GrammarCompiler: @unchecked Sendable {
         }
         lock.unlock()
 
-        var error: NSError?
-        guard let grammar = LLMBridge.grammar(fromJSONSchema: schemaJSON, error: &error) else {
-            throw Failure.rejected(error?.localizedDescription ?? "unsupported schema")
+        let grammar: String
+        do {
+            grammar = try LLMBridge.grammar(fromJSONSchema: schemaJSON)
+        } catch {
+            throw Failure.rejected((error as NSError).localizedDescription)
         }
 
         lock.lock()

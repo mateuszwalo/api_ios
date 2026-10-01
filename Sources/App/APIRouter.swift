@@ -50,7 +50,7 @@ struct APIRouter: Sendable {
             let message = "request body is not a valid chat completion: \(error)"
             await logFailure(path: http.path, status: 400, message: message, started: started,
                              queueDepth: queueDepth, requestBody: redactedRequest)
-            return error(400, message, code: "invalid_request")
+            return self.error(400, message, code: "invalid_request")
         }
 
         let imageCount = decoded.messages.reduce(0) { $0 + $1.content.images.count }

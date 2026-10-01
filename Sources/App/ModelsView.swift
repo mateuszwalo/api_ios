@@ -7,7 +7,9 @@ struct ModelsView: View {
     @State private var showToken = false
 
     var body: some View {
-        @Bindable var controller = controller
+        // The downloader is a `let` on the controller, so the token field binds to the
+        // downloader directly; a binding through the controller would need a writable path.
+        @Bindable var downloader = controller.downloader
 
         NavigationStack {
             List {
@@ -78,7 +80,7 @@ struct ModelsView: View {
                     .disabled(URL(string: customURL.trimmingCharacters(in: .whitespaces)) == nil)
 
                     DisclosureGroup("Token for gated repositories", isExpanded: $showToken) {
-                        SecureField("hf_…", text: $controller.downloader.huggingFaceToken)
+                        SecureField("hf_…", text: $downloader.huggingFaceToken)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                         Text("Held in memory only, never written to disk. The catalogue entries above do not need it.")

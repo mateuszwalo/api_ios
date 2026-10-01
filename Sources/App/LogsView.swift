@@ -6,16 +6,18 @@ struct LogsView: View {
     @State private var shareItem: ShareItem?
 
     var body: some View {
-        @Bindable var controller = controller
+        // Bound to the log rather than to the controller: `log` is a `let`, so a binding
+        // through the controller would need a writable key path it does not have.
+        @Bindable var log = controller.log
 
         NavigationStack {
             List {
-                if controller.log.entries.isEmpty {
+                if log.entries.isEmpty {
                     ContentUnavailableView("No requests yet",
                                            systemImage: "list.bullet.rectangle",
                                            description: Text("Served requests appear here as they complete."))
                 }
-                ForEach(controller.log.entries) { entry in
+                ForEach(log.entries) { entry in
                     NavigationLink {
                         LogDetailView(entry: entry)
                     } label: {
@@ -27,18 +29,18 @@ struct LogsView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
-                        UIPasteboard.general.string = controller.log.exportText()
+                        UIPasteboard.general.string = log.exportText()
                     } label: {
                         Image(systemName: "doc.on.doc")
                     }
                     Button {
-                        if let url = controller.log.logFileURL { shareItem = ShareItem(url: url) }
+                        if let url = log.logFileURL { shareItem = ShareItem(url: url) }
                     } label: {
                         Image(systemName: "square.and.arrow.up")
                     }
                     Menu {
-                        Toggle("Write bodies to the log file", isOn: $controller.log.persistBodies)
-                        Button("Clear list", role: .destructive) { controller.log.clear() }
+                        Toggle("Write bodies to the log file", isOn: $log.persistBodies)
+                        Button("Clear list", role: .destructive) { log.clear() }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }

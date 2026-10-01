@@ -26,10 +26,9 @@ final class GrammarTests: XCTestCase {
     }
 
     private func compile(_ schema: String) throws -> String {
-        var error: NSError?
-        let grammar = LLMBridge.grammar(fromJSONSchema: schema, error: &error)
-        if let error { XCTFail("conversion failed: \(error.localizedDescription)") }
-        return try XCTUnwrap(grammar)
+        // Imported as throwing: a nullable return plus an NSError out-parameter is the
+        // convention Swift folds into `throws`.
+        try LLMBridge.grammar(fromJSONSchema: schema)
     }
 
     /// The whole set of constructs that arrive in practice, in one schema: `$defs`, `$ref`,
@@ -103,16 +102,11 @@ final class GrammarTests: XCTestCase {
     /// Malformed input must fail loudly. The caller turns this into a 400; the one thing it
     /// must never do is fall back to asking the model nicely in the prompt.
     func testMalformedSchemaIsRejected() {
-        var error: NSError?
-        let grammar = LLMBridge.grammar(fromJSONSchema: "{not json", error: &error)
-        XCTAssertNil(grammar)
-        XCTAssertNotNil(error)
+        XCTAssertThrowsError(try LLMBridge.grammar(fromJSONSchema: "{not json"))
     }
 
     func testEmptySchemaIsRejected() {
-        var error: NSError?
-        XCTAssertNil(LLMBridge.grammar(fromJSONSchema: "", error: &error))
-        XCTAssertNotNil(error)
+        XCTAssertThrowsError(try LLMBridge.grammar(fromJSONSchema: ""))
     }
 
     /// The reject vectors carry a `_why` annotation describing what each one tests. With

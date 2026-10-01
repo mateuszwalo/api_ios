@@ -2,6 +2,7 @@
 
 #import <mach/mach.h>
 #import <os/proc.h>
+#import <time.h>
 
 #include <string>
 #include <type_traits>

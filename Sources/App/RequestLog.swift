@@ -18,8 +18,7 @@ struct RequestLogEntry: Identifiable, Codable, Sendable, Equatable {
     let footprintBytes: UInt64
     let thermalState: String
     let error: String?
-    /// Request and response bodies with image payloads replaced by their size. Kept out of
-    /// the identity comparison because they are large and never the thing being compared.
+    /// Request and response bodies with image payloads replaced by their size.
     let requestBody: String
     let responseBody: String
 
