@@ -1,0 +1,22 @@
+# --- materialy lokalne, poza repo ---
+private/
+Tests/Fixtures/local/
+*.local.md
+
+# --- build ---
+build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+*.ipa
+Payload/
+LlamaCpp.xcframework/
+
+# --- modele (nigdy w repo) ---
+*.gguf
+
+# --- macOS / Xcode ---
+.DS_Store
+xcuserdata/
+*.xcuserstate
+.swiftpm/

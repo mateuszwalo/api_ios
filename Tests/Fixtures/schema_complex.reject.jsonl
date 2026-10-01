@@ -1,0 +1,10 @@
+{"_why":"wartosc spoza enum w tags","entries":[{"name":"A","details":"d","section":"S","position_in_section":1,"tags":["omega"],"parts":[{"name":"p"}],"amount":null}]}
+{"_why":"tags pusta, lamie minItems","entries":[{"name":"A","details":"d","section":"S","position_in_section":1,"tags":[],"parts":[{"name":"p"}],"amount":null}]}
+{"_why":"parts pusta, lamie minItems","entries":[{"name":"A","details":"d","section":"S","position_in_section":1,"tags":["alpha"],"parts":[],"amount":null}]}
+{"_why":"brak wymaganego amount","entries":[{"name":"A","details":"d","section":"S","position_in_section":1,"tags":["alpha"],"parts":[{"name":"p"}]}]}
+{"_why":"brak wymaganego name w Part","entries":[{"name":"A","details":"d","section":"S","position_in_section":1,"tags":["alpha"],"parts":[{"group":"g"}],"amount":null}]}
+{"_why":"variant spoza enum","entries":[{"name":"A","details":"d","section":"S","position_in_section":1,"tags":["alpha"],"parts":[{"name":"p","variant":"six"}],"amount":null}]}
+{"_why":"position_in_section ponizej minimum","entries":[{"name":"A","details":"d","section":"S","position_in_section":0,"tags":["alpha"],"parts":[{"name":"p"}],"amount":null}]}
+{"_why":"zly typ: entries jako obiekt","entries":{"name":"A"}}
+{"_why":"tekst przed JSON-em (ogrodzenie markdown)","_raw":"```json\n{\"entries\":[]}\n```"}
+{"_why": "dodatkowa wlasciwosc spoza schematu, lamie additionalProperties:false", "entries": [{"name": "A", "details": "d", "section": "S", "position_in_section": 1, "tags": ["alpha"], "parts": [{"name": "p"}], "amount": "1", "nieoczekiwane_pole": "x"}]}

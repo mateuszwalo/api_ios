@@ -1,0 +1,47 @@
+{
+  "_comment": "Wire form: as it arrives over HTTP. The client library strips 'title' and adds additionalProperties:false to every object. A converter tested against raw framework output passes here and fails in production.",
+  "$defs": {
+    "Match": {
+      "properties": {
+        "item_id": {
+          "type": "integer"
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "item_id"
+      ],
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "matches": {
+      "items": {
+        "$ref": "#/$defs/Match"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "matches"
+  ],
+  "type": "object",
+  "additionalProperties": false
+}

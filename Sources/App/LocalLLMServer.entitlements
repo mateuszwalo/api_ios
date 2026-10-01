@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Wpisane swiadomie. Przy sideloadzie z darmowym Apple ID AltStore/Sideloadly
+       to uprawnienie usunie (wymaga platnego konta). Szczegoly w README. -->
+  <key>com.apple.developer.kernel.increased-memory-limit</key>
+  <true/>
+</dict>
+</plist>

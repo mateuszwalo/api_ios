@@ -1,0 +1,165 @@
+{
+  "_comment": "Wire form: as it arrives over HTTP. The client library strips 'title' and adds additionalProperties:false to every object. A converter tested against raw framework output passes here and fails in production.",
+  "$defs": {
+    "Entry": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "details": {
+          "type": "string"
+        },
+        "section": {
+          "type": "string"
+        },
+        "page_number": {
+          "default": 1,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "position_in_section": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "has_mark": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mark_name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "has_picture": {
+          "default": false,
+          "type": "boolean"
+        },
+        "picture_mark_name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "has_emphasis": {
+          "default": false,
+          "type": "boolean"
+        },
+        "tags": {
+          "items": {
+            "enum": [
+              "alpha",
+              "beta",
+              "gamma",
+              "delta",
+              "epsilon",
+              "other"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "parts": {
+          "items": {
+            "$ref": "#/$defs/Part"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "details",
+        "section",
+        "position_in_section",
+        "tags",
+        "parts",
+        "amount"
+      ],
+      "type": "object",
+      "additionalProperties": false
+    },
+    "Part": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "group": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "variant": {
+          "anyOf": [
+            {
+              "enum": [
+                "one",
+                "two",
+                "three",
+                "four",
+                "five"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "source_name": {
+      "default": "NA",
+      "type": "string"
+    },
+    "source_type": {
+      "default": "Unknown",
+      "type": "string"
+    },
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/Entry"
+      },
+      "type": "array"
+    }
+  },
+  "type": "object",
+  "additionalProperties": false
+}
