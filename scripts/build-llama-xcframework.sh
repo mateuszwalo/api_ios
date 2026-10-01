@@ -130,7 +130,7 @@ build_slice() {
   # actually generated. Hard-coding them cost a build once already: a guard asserting a
   # target called exactly `mtmd` failed the whole run on a naming assumption.
   local targets=""
-  for candidate in llama common mtmd; do
+  for candidate in llama mtmd; do
     if grep -qE "^[[:space:]]*${candidate}[[:space:]]*$" "$dir/targets.txt"; then
       targets="$targets $candidate"
     else
@@ -138,6 +138,22 @@ build_slice() {
       grep -i "$candidate" "$dir/targets.txt" | sed 's|^|      |' || echo "      (none)"
     fi
   done
+
+  # The library holding json_schema_to_grammar has been called both `common` and
+  # `llama-common`. Guessing `common` cost a build: the target was silently skipped and the
+  # miss only surfaced as undefined symbols at link time, two steps later.
+  local common_target=""
+  for alias in llama-common common; do
+    if grep -qE "^[[:space:]]*${alias}[[:space:]]*$" "$dir/targets.txt"; then
+      common_target="$alias"; break
+    fi
+  done
+  if [ -z "$common_target" ]; then
+    echo "!! no common library target found; json_schema_to_grammar would be missing" >&2
+    cat "$dir/targets.txt" >&2
+    exit 1
+  fi
+  targets="$targets $common_target"
   if [ -z "$targets" ]; then
     echo "!! none of llama, common or mtmd exist as targets; see the list above" >&2
     exit 1
@@ -164,6 +180,30 @@ build_slice() {
     echo "!! no mtmd library was produced; vision would be unavailable on the device" >&2
     echo "   targets that were generated:" >&2
     cat "$dir/targets.txt" >&2
+    exit 1
+  fi
+
+  # Check the symbols this project actually calls, here rather than at link time.
+  #
+  # A missing library does not announce itself: the merge succeeds, the xcframework is
+  # produced, and the absence turns up minutes later as undefined symbols in a log that
+  # points at the caller rather than the cause. These three cover the parts of llama.cpp
+  # that nothing else would reveal until the device refused a request.
+  echo "==> checking symbols"
+  local symbols
+  symbols=$(nm -gU "$dir/libllamacpp.a" 2>/dev/null || true)
+  local missing=""
+  for symbol in json_schema_to_grammar llama_sampler_init_grammar mtmd_tokenize llama_model_chat_template; do
+    if echo "$symbols" | grep -q "$symbol"; then
+      echo "    ok: $symbol"
+    else
+      echo "    MISSING: $symbol"
+      missing="$missing $symbol"
+    fi
+  done
+  if [ -n "$missing" ]; then
+    echo "!! the merged library is missing:$missing" >&2
+    echo "   built targets:$targets" >&2
     exit 1
   fi
   # shellcheck disable=SC2086

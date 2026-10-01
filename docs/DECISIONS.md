@@ -51,6 +51,30 @@ skrypt (`scripts/build-llama-xcframework.sh`) z `LLAMA_BUILD_COMMON=ON`.
 **Wersja llama.cpp przypieta** w `LLAMA_CPP_TAG`. Zachowanie `json_schema_to_grammar`
 i obsluga wizji gemma3 zmienialy sie miedzy wersjami; powtarzalnosc pomiaru wymaga pinu.
 
+**Kod mostu pisany z naglowkow przypietego taga, nie z pamieci.** API llama.cpp zmienia
+sie szybciej, niz sugeruje numer wersji — w `v0.4.1` flash attention to enum, nie bool,
+mmap przeniesiono z `use_mmap` do `load_mode`, a `mtmd_helper_bitmap_init_from_buf` bierze
+piec argumentow i zwraca strukture opakowujaca. Proba zabezpieczenia sie wykrywaniem API
+w czasie kompilacji byla bledem: `if constexpr` w funkcji NIESZABLONOWEJ niczego nie
+odrzuca, wiec martwa galaz i tak musi sie skompilowac — i to ona wywalila build.
+
+**`json_schema_to_grammar` bierze `common_json`, nie nlohmanna.** llama.cpp niesie wlasny
+typ JSON i to on jest w tym interfejsie.
+
+**Konsekwencja, ktora trzeba zapisac uczciwie: kolejnosc wlasciwosci w gramatyce jest
+alfabetyczna, nie taka jak w schemacie.** Konwerter generuje reguly obiektow w kolejnosci,
+w jakiej widzi wlasciwosci. Po naszej stronie ta kolejnosc ginie juz przy dekodowaniu —
+`JSONValue` trzyma obiekt jako slownik Swifta, a slowniki Foundation sa nieuporzadkowane —
+wiec `serialized()` sortuje klucze, zeby wynik byl powtarzalny i zeby ten sam schemat
+zapisany inaczej trafial w ten sam wpis cache'u. Gramatyka wymusza wiec wypisywanie pol
+alfabetycznie.
+
+Jest to bezpieczne, bo parser po stronie klienta idzie przez Pydantic i jest obojetny na
+kolejnosc kluczy (potwierdzone). Zapisane, bo to odstepstwo od literalnego schematu:
+`enum`, `required` i `minItems` sa egzekwowane dokladnie, kolejnosc pol — nie. Gdyby
+kiedys zaczela miec znaczenie, trzeba by przekazywac do konwertera surowy tekst schematu
+wyciety z ciala zadania, z pominieciem dekodowania.
+
 **llama.cpp nie jest submodulem** — skrypt klonuje przypiety tag shallow. Repo zostaje
 male, a klucz cache'u CI to wprost zawartosc `LLAMA_CPP_TAG`.
 
