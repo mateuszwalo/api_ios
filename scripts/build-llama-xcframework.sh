@@ -176,7 +176,7 @@ build_slice() {
 
   # Vision is not optional here: a build without mtmd would install happily and refuse every
   # request carrying an image. Better to fail now, with the target list above in the log.
-  if ! echo "$libs" | grep -qi 'mtmd'; then
+  if ! grep -qi 'mtmd' <<< "$libs"; then
     echo "!! no mtmd library was produced; vision would be unavailable on the device" >&2
     echo "   targets that were generated:" >&2
     cat "$dir/targets.txt" >&2
@@ -207,7 +207,11 @@ build_slice() {
   fi
   local missing=""
   for symbol in json_schema_to_grammar llama_sampler_init_grammar mtmd_tokenize llama_model_chat_template; do
-    if echo "$symbols" | grep -q "$symbol"; then
+    # A here-string, not a pipe. `grep -q` exits the moment it matches, which closes the
+    # pipe under a still-writing `echo`; with `set -o pipefail` that SIGPIPE becomes the
+    # pipeline's status, so a found symbol reports as missing. The check said all four were
+    # absent when all four were present.
+    if grep -q "$symbol" <<< "$symbols"; then
       echo "    ok: $symbol"
     else
       echo "    MISSING: $symbol"
