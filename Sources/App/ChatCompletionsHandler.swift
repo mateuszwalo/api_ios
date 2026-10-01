@@ -64,7 +64,10 @@ struct ChatCompletionsHandler: Sendable {
             throw Failure(status: 500, message: e.description, code: "inference_failed")
         }
 
-        let modelName = request.model ?? (await engine.loadedModelName) ?? "local"
+        // Read before the coalescing chain: the right-hand side of `??` is an autoclosure,
+        // and an autoclosure cannot be async.
+        let loadedName = await engine.loadedModelName
+        let modelName = request.model ?? loadedName ?? "local"
         return ChatCompletionResponse(
             id: "chatcmpl-" + String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24)),
             created: Int(Date().timeIntervalSince1970),
