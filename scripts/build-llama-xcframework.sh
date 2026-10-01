@@ -101,7 +101,6 @@ build_slice() {
     -DLLAMA_BUILD_COMMON=ON \
     -DLLAMA_BUILD_EXAMPLES=OFF \
     -DLLAMA_BUILD_TESTS=OFF \
-    -DLLAMA_BUILD_TOOLS=OFF \
     -DLLAMA_BUILD_SERVER=OFF \
     -DLLAMA_CURL=OFF \
     -DLLAMA_OPENSSL=OFF \
@@ -111,8 +110,26 @@ build_slice() {
     -DGGML_BLAS=OFF \
     -DMTMD_VIDEO=OFF
 
-  echo "==> building $name"
-  cmake --build "$dir" --config Release
+  # Only the libraries that go into the xcframework, never ALL_BUILD.
+  #
+  # ALL_BUILD also builds llama.cpp's own command-line targets, and those are not meant for
+  # an iOS sysroot: `llama-app` includes a generated `build-info.h` that the Xcode generator
+  # does not produce, so the build fails on a binary nothing here would ship anyway.
+  #
+  # `LLAMA_BUILD_TOOLS` stays at its default on purpose: mtmd lives under tools/, and
+  # turning tools off takes the whole vision path with it.
+  echo "==> targets in the generated project:"
+  xcodebuild -list -project "$dir/llama.cpp.xcodeproj" > "$dir/targets.txt" 2>&1 || true
+  sed -n '/Targets:/,$p' "$dir/targets.txt" | head -n 40
+
+  if ! grep -qw "mtmd" "$dir/targets.txt"; then
+    echo "!! the mtmd target is missing: no multimodal projector support could be built," >&2
+    echo "   which means vision requests would be refused on the device." >&2
+    exit 1
+  fi
+
+  echo "==> building $name (llama, common, mtmd)"
+  cmake --build "$dir" --config Release --target llama common mtmd
 
   # One fat static library per slice: an xcframework will not take a pile of .a files.
   local libs
