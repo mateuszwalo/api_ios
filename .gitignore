@@ -20,3 +20,5 @@ LlamaCpp.xcframework/
 xcuserdata/
 *.xcuserstate
 .swiftpm/
+Sources/App/Info.plist
+Sources/LlamaBridge/Info.plist

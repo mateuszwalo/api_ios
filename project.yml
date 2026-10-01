@@ -29,6 +29,16 @@ targets:
         link: true
       - sdk: Metal.framework
       - sdk: Accelerate.framework
+    # An embedded framework needs its own Info.plist or the app will not install: the
+    # loader validates every bundle inside Frameworks/ and refuses the lot when one has no
+    # plist. Everything compiled and linked without it; the failure only appeared at
+    # install time.
+    info:
+      path: Sources/LlamaBridge/Info.plist
+      properties:
+        CFBundleName: LlamaBridge
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
     settings:
       base:
         DEFINES_MODULE: YES
