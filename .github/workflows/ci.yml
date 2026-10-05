@@ -80,6 +80,24 @@ jobs:
           # the failure appears only on the device, long after the build looked fine.
           test -f Payload/LocalLLMServer.app/Frameworks/LlamaBridge.framework/Info.plist \
             || { echo "!! LlamaBridge.framework has no Info.plist; the app would not install" >&2; exit 1; }
+          # Confirm the shipped framework actually carries llama.cpp.
+          #
+          # A dynamic framework that links the static library but keeps none of its code
+          # produces an app that installs, launches, and fails the moment a model is loaded.
+          # The size is the first hint — a build with Metal shaders embedded is tens of
+          # megabytes, not a few — and the symbols settle it.
+          FW=Payload/LocalLLMServer.app/Frameworks/LlamaBridge.framework/LlamaBridge
+          echo "app:       $(du -sh Payload/LocalLLMServer.app | cut -f1)"
+          echo "framework: $(du -h "$FW" | cut -f1)"
+          for symbol in llama_decode llama_sampler_init_grammar mtmd_tokenize json_schema_to_grammar; do
+            if nm -g "$FW" 2>/dev/null | grep -q "$symbol"; then
+              echo "    ok: $symbol"
+            else
+              echo "!! $symbol is not in the shipped framework; the app would fail on load" >&2
+              exit 1
+            fi
+          done
+
           zip -qry LocalLLMServer.ipa Payload
           ls -lh LocalLLMServer.ipa
           echo "llama.cpp: $(cat build/LlamaCpp.xcframework/BUILD_INFO 2>/dev/null || echo cached)"
