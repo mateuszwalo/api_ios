@@ -163,6 +163,10 @@ struct StatsSnapshot: Codable, Sendable {
     let availableMemoryBytes: UInt64
     let thermalState: String
     let uptimeSeconds: Int
+    /// Why the last load attempt failed, if it did. Surfaced over HTTP because the person
+    /// who can read the screen and the person who can fix the code are rarely the same one,
+    /// and retyping a message from a photograph of an iPad loses the details that matter.
+    let lastError: String?
 
     enum CodingKeys: String, CodingKey {
         case modelLoaded = "model_loaded"
@@ -177,6 +181,7 @@ struct StatsSnapshot: Codable, Sendable {
         case availableMemoryBytes = "available_memory_bytes"
         case thermalState = "thermal_state"
         case uptimeSeconds = "uptime_seconds"
+        case lastError = "last_error"
     }
 }
 

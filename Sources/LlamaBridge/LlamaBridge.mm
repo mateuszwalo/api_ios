@@ -194,6 +194,18 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
                                       ? _options.threadCount
                                       : NSProcessInfo.processInfo.activeProcessorCount);
         cparams.n_threads_batch = cparams.n_threads;
+
+        // One set of logits, not one per token in the batch.
+        //
+        // The output buffer is sized n_vocab × n_outputs, and Gemma 3 carries a 262144-token
+        // vocabulary: at the default, where n_outputs follows n_batch, that is half a
+        // gigabyte reserved before a single token is produced. This server samples one token
+        // at a time and never reads logits for any position but the last, so the rest was
+        // never going to be looked at. On an 8 GB device it is the difference between the
+        // context being created and the load failing outright.
+        cparams.n_outputs_max = 1;
+        cparams.n_outputs_max_per_seq = 1;
+        cparams.n_seq_max = 1;
         cparams.flash_attn_type = _options.flashAttention ? LLAMA_FLASH_ATTN_TYPE_ENABLED
                                                           : LLAMA_FLASH_ATTN_TYPE_DISABLED;
 

@@ -88,7 +88,7 @@ final class ServerController {
             selectedPair = pair
         } catch {
             selectedPair = nil
-            loadError = Self.describeLoadFailure(error)
+            loadError = describeLoadFailure(error)
         }
     }
 
@@ -99,18 +99,23 @@ final class ServerController {
 
     /// Out of memory is the expected failure on this hardware, so it gets a message that
     /// says what to do rather than the allocator's.
-    private static func describeLoadFailure(_ error: Error) -> String {
+    private func describeLoadFailure(_ error: Error) -> String {
         let text = (error as NSError).localizedDescription
-        if MemoryProbe.isUnderPressure() || text.lowercased().contains("memory") {
-            return """
-            \(text)
-
-            This device does not have enough free memory for this model at this context \
-            length. Close other apps, or reduce the context length, or use a smaller \
-            quantisation. An 8 GB iPad cannot hold a 4B model at 32k context.
-            """
+        guard MemoryProbe.isUnderPressure() || text.lowercased().contains("memory") else {
+            return text
         }
-        return text
+        // The numbers, not just the verdict: whoever reads this has to decide what to lower,
+        // and "out of memory" on its own says neither by how much nor which setting to touch.
+        return """
+        \(text)
+
+        Available to this process: \(MemoryProbe.format(MemoryProbe.availableBytes())). \
+        Tried to load at context \(contextLength) with batch \(batchSize).
+
+        Both are worth lowering, in the Server tab, before loading again — 8192 and 128 are \
+        a reasonable first retry. A 4B model at 32k context does not fit on an 8 GB iPad, and \
+        the increased-memory-limit entitlement does not survive signing with a free Apple ID.
+        """
     }
 
     // MARK: Server
@@ -169,7 +174,8 @@ final class ServerController {
             peakFootprintBytes: log.peakFootprintBytes,
             availableMemoryBytes: MemoryProbe.availableBytes(),
             thermalState: MemoryProbe.thermalStateName(),
-            uptimeSeconds: startedAt.map { Int(Date().timeIntervalSince($0)) } ?? 0)
+            uptimeSeconds: startedAt.map { Int(Date().timeIntervalSince($0)) } ?? 0,
+            lastError: loadError)
     }
 
     private func startTicker() {
