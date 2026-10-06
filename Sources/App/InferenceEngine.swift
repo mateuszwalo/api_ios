@@ -52,9 +52,17 @@ struct EngineResult: Sendable {
     /// True when generation stopped because the token budget ran out rather than because
     /// the model emitted a stop token.
     let hitTokenLimit: Bool
+    /// Prompt tokens taken from the cache instead of evaluated; zero with reuse off.
+    var cachedPromptTokens: Int = 0
+    /// A short description of the settings the engine ran under, echoed into the response.
+    var configuration: String = ""
 
+    /// Over the tokens actually evaluated. With prefix reuse most of a prompt may come from
+    /// the cache, and dividing the whole prompt by the time spent on its tail would report a
+    /// prefill rate many times faster than the hardware is.
     var prefillTokensPerSecond: Double {
-        prefillMilliseconds > 0 ? Double(promptTokens) * 1000.0 / Double(prefillMilliseconds) : 0
+        let evaluated = promptTokens - cachedPromptTokens
+        return prefillMilliseconds > 0 ? Double(evaluated) * 1000.0 / Double(prefillMilliseconds) : 0
     }
 
     var decodeTokensPerSecond: Double {

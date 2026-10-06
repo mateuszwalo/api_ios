@@ -81,7 +81,9 @@ struct ChatCompletionsHandler: Sendable {
             timings: .init(prefillMs: result.prefillMilliseconds,
                            decodeMs: result.decodeMilliseconds,
                            prefillTps: result.prefillTokensPerSecond,
-                           decodeTps: result.decodeTokensPerSecond)
+                           decodeTps: result.decodeTokensPerSecond,
+                           cachedTokens: result.cachedPromptTokens,
+                           config: result.configuration.isEmpty ? nil : result.configuration)
         )
     }
 

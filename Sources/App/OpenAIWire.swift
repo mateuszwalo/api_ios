@@ -183,12 +183,20 @@ struct ChatCompletionResponse: Encodable {
         let decodeMs: Int
         let prefillTps: Double
         let decodeTps: Double
+        /// Prompt tokens served from the prefix cache rather than evaluated. prefill_tps is
+        /// computed over the rest, so the two together are the honest prefill figure.
+        var cachedTokens: Int = 0
+        /// The settings this response was produced under. When configurations are compared,
+        /// every result says which one it came from, and no spreadsheet has to remember it.
+        var config: String? = nil
 
         enum CodingKeys: String, CodingKey {
             case prefillMs = "prefill_ms"
             case decodeMs = "decode_ms"
             case prefillTps = "prefill_tps"
             case decodeTps = "decode_tps"
+            case cachedTokens = "cached_tokens"
+            case config
         }
     }
 }

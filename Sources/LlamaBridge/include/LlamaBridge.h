@@ -30,9 +30,18 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL flashAttention;          // default YES
 @property (nonatomic) BOOL useMemoryMapping;        // default YES
 /// When NO (the default), the KV cache is cleared between requests so every prefill is
-/// measured cold. Leaving it on is realistic for deployment but hides the true prefill
-/// cost and makes a run depend on whatever happened to run before it.
+/// measured cold. When YES, a text request reuses the longest prefix it shares with what is
+/// already in the cache and evaluates only the rest — realistic for a pipeline that sends
+/// the same long system prompt many times over. Image requests are always evaluated cold.
+///
+/// Turning it on also keeps the sliding-window layers' cache at full length (`swa_full`),
+/// which removing a prefix's tail requires. That costs memory: roughly 120 KiB per context
+/// token for Gemma 3 4B, so it pairs with a shorter context or a quantised KV cache.
 @property (nonatomic) BOOL reuseKVCacheBetweenRequests;
+/// 0 = f16 (the default, as the reference runtime uses), 1 = q8_0. Quantising halves the
+/// cache's memory and changes the numbers slightly, so results stop being directly
+/// comparable with measurements taken at f16.
+@property (nonatomic) NSInteger kvCacheType;
 + (instancetype)defaults;
 @end
 
@@ -74,6 +83,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSInteger decodeMilliseconds;
 /// YES when the token budget ran out, NO when the model emitted a stop token.
 @property (nonatomic, readonly) BOOL hitTokenLimit;
+/// Prompt tokens taken from the cache rather than evaluated. Zero unless reuse is on.
+/// Reported so a prefill rate can be computed over the tokens actually processed: dividing
+/// the whole prompt by a prefill that skipped most of it overstates the speed many times.
+@property (nonatomic, readonly) NSInteger cachedPromptTokens;
 @end
 
 #pragma mark - Bridge

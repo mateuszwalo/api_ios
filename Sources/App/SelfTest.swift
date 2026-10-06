@@ -141,13 +141,16 @@ struct SelfTest: Sendable {
             let total = try await engine.measurePrompt(withImage)
             let text = try await engine.measurePrompt(withoutImage)
             let perImage = total - text
+            // 256 image embeddings plus the few tokens around them: Gemma wraps the image in
+            // start- and end-of-image markers, and the prompt puts a newline after it. 259 was
+            // measured on the device. Pan & scan would add whole tiles, 256 at a time.
             return [
-                "ok": perImage == 256,
+                "ok": (256...264).contains(perImage),
                 "prompt_tokens_with_image": total,
                 "prompt_tokens_text_only": text,
                 "tokens_attributable_to_image": perImage,
-                "expected": 256,
-                "note": "256 means one tile, pan & scan off. A multiple of 256 means pan & scan is active and token counts will not match the reference.",
+                "expected": "256 embeddings + a few marker tokens (259 measured)",
+                "note": "Around 259 means one tile, pan & scan off — the reference configuration. Around 515 or more means pan & scan is active and token counts will not match the reference.",
             ]
         } catch {
             return ["ok": false, "detail": "\(error)"]

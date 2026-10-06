@@ -9,15 +9,76 @@ final class ServerController {
 
     // MARK: Settings
 
-    var port: UInt16 = 8080
-    var contextLength = 32768
-    var batchSize = 512
+    // Persisted on every change and restored at launch. They used to reset to defaults on
+    // each start, so a tester who relaunched after a crash silently ran the next test on a
+    // different configuration from the one written down.
+    var port: UInt16 = 8080 { didSet { persistSettings() } }
+    var contextLength = 32768 { didSet { persistSettings() } }
+    var batchSize = 512 { didSet { persistSettings() } }
     var threadCount = 0                    // 0 = as many as there are cores
-    var flashAttention = true
-    var useMemoryMapping = true
+    var flashAttention = true { didSet { persistSettings() } }
+    var useMemoryMapping = true { didSet { persistSettings() } }
     /// Off by default so every prefill is measured cold. See docs/DECISIONS.md.
-    var reuseKVCache = false
+    var reuseKVCache = false { didSet { persistSettings() } }
+    /// 0 = f16 (reference), 1 = q8_0.
+    var kvCacheType = 0 { didSet { persistSettings() } }
     var defaultMaxTokens = 4096
+
+    /// Everything a load depends on, in one value: what is persisted, what the admin API
+    /// reads and writes, and what a test log should record next to its results.
+    struct TuningSettings: Codable, Sendable, Equatable {
+        var port: UInt16 = 8080
+        var contextLength = 32768
+        var batchSize = 512
+        var flashAttention = true
+        var useMemoryMapping = true
+        var reuseKVCache = false
+        var kvCacheType = "f16"
+
+        enum CodingKeys: String, CodingKey {
+            case port
+            case contextLength = "context_length"
+            case batchSize = "batch_size"
+            case flashAttention = "flash_attention"
+            case useMemoryMapping = "memory_mapping"
+            case reuseKVCache = "reuse_kv_cache"
+            case kvCacheType = "kv_cache_type"
+        }
+    }
+
+    var settings: TuningSettings {
+        TuningSettings(port: port, contextLength: contextLength, batchSize: batchSize,
+                       flashAttention: flashAttention, useMemoryMapping: useMemoryMapping,
+                       reuseKVCache: reuseKVCache, kvCacheType: kvCacheType == 1 ? "q8_0" : "f16")
+    }
+
+    @ObservationIgnored private var restoringSettings = false
+    private static let settingsKey = "tuningSettings"
+
+    private func persistSettings() {
+        guard !restoringSettings, let data = try? JSONEncoder().encode(settings) else { return }
+        UserDefaults.standard.set(data, forKey: Self.settingsKey)
+    }
+
+    private func restoreSettings() {
+        guard let data = UserDefaults.standard.data(forKey: Self.settingsKey),
+              let saved = try? JSONDecoder().decode(TuningSettings.self, from: data) else { return }
+        apply(saved)
+    }
+
+    /// Applies a whole configuration at once, persisting it once rather than per field.
+    func apply(_ new: TuningSettings) {
+        restoringSettings = true
+        port = new.port
+        contextLength = new.contextLength
+        batchSize = new.batchSize
+        flashAttention = new.flashAttention
+        useMemoryMapping = new.useMemoryMapping
+        reuseKVCache = new.reuseKVCache
+        kvCacheType = new.kvCacheType.lowercased() == "q8_0" ? 1 : 0
+        restoringSettings = false
+        persistSettings()
+    }
 
     // MARK: State
 
@@ -47,6 +108,7 @@ final class ServerController {
 
     init() {
         downloader = ModelDownloader(destinationDirectory: store.directory)
+        restoreSettings()
         observeMemoryPressure()
         startTicker()
     }
@@ -86,6 +148,7 @@ final class ServerController {
         options.flashAttention = flashAttention
         options.useMemoryMapping = useMemoryMapping
         options.reuseKVCacheBetweenRequests = reuseKVCache
+        options.kvCacheType = kvCacheType
 
         do {
             try await engine.load(.init(name: pair.name,
@@ -102,6 +165,117 @@ final class ServerController {
     func unloadModel() async {
         await engine.unload()
         selectedPair = nil
+    }
+
+    // MARK: Remote configuration
+
+    /// A load request from the admin API. Every field is optional: whatever is left out keeps
+    /// its current value, so a sweep can change one setting per call.
+    struct RemoteLoadRequest: Decodable {
+        let model: String?
+        let projector: Bool?
+        let contextLength: Int?
+        let batchSize: Int?
+        let flashAttention: Bool?
+        let memoryMapping: Bool?
+        let reuseKVCache: Bool?
+        let kvCacheType: String?
+
+        enum CodingKeys: String, CodingKey {
+            case model, projector
+            case contextLength = "context_length"
+            case batchSize = "batch_size"
+            case flashAttention = "flash_attention"
+            case memoryMapping = "memory_mapping"
+            case reuseKVCache = "reuse_kv_cache"
+            case kvCacheType = "kv_cache_type"
+        }
+    }
+
+    struct RemoteStatus: Encodable {
+        let ok: Bool
+        let error: String?
+        let loadedModel: String?
+        let vision: Bool
+        let configuration: String
+        let settings: TuningSettings
+        let models: [String]
+        let footprintBytes: UInt64
+        let availableMemoryBytes: UInt64
+
+        enum CodingKeys: String, CodingKey {
+            case ok, error, vision, configuration, settings, models
+            case loadedModel = "loaded_model"
+            case footprintBytes = "footprint_bytes"
+            case availableMemoryBytes = "available_memory_bytes"
+        }
+    }
+
+    func remoteStatus(ok: Bool = true, error: String? = nil) async -> RemoteStatus {
+        store.refresh()
+        return RemoteStatus(ok: ok, error: error,
+                            loadedModel: selectedPair?.name,
+                            vision: await engine.supportsImages,
+                            configuration: await engine.configurationLabel,
+                            settings: settings,
+                            models: store.pairs.map(\.name),
+                            footprintBytes: MemoryProbe.footprintBytes(),
+                            availableMemoryBytes: MemoryProbe.availableBytes())
+    }
+
+    /// Reconfigures and reloads from the network, so a parameter sweep runs from a laptop
+    /// without anyone touching the device between steps. Touching it is exactly what spoils
+    /// a thermal measurement and what a tester forgets to do the same way twice.
+    ///
+    /// The port is deliberately not settable here: changing it would cut the connection the
+    /// request arrived on, and the caller would never learn whether it worked.
+    func remoteLoad(_ body: Data) async -> (status: Int, body: RemoteStatus) {
+        let request: RemoteLoadRequest
+        do {
+            request = try JSONDecoder().decode(RemoteLoadRequest.self, from: body.isEmpty ? Data("{}".utf8) : body)
+        } catch {
+            return (400, await remoteStatus(ok: false, error: "body is not a valid load request: \(error)"))
+        }
+        if let value = request.contextLength, !(2048...131072).contains(value) {
+            return (400, await remoteStatus(ok: false, error: "context_length must be within 2048...131072"))
+        }
+        if let value = request.batchSize, !(32...4096).contains(value) {
+            return (400, await remoteStatus(ok: false, error: "batch_size must be within 32...4096"))
+        }
+        if let value = request.kvCacheType, !["f16", "q8_0"].contains(value.lowercased()) {
+            return (400, await remoteStatus(ok: false, error: "kv_cache_type must be f16 or q8_0"))
+        }
+
+        store.refresh()
+        guard let name = request.model ?? selectedPair?.name,
+              let pair = store.pairs.first(where: {
+                  $0.name.caseInsensitiveCompare(name) == .orderedSame ||
+                  $0.model.name.caseInsensitiveCompare(name) == .orderedSame
+              }) else {
+            return (404, await remoteStatus(ok: false,
+                                            error: "no model named \(request.model ?? "(none given)") on the device"))
+        }
+
+        var next = settings
+        if let value = request.contextLength { next.contextLength = value }
+        if let value = request.batchSize { next.batchSize = value }
+        if let value = request.flashAttention { next.flashAttention = value }
+        if let value = request.memoryMapping { next.useMemoryMapping = value }
+        if let value = request.reuseKVCache { next.reuseKVCache = value }
+        if let value = request.kvCacheType { next.kvCacheType = value.lowercased() }
+        apply(next)
+
+        LLMBridge.noteEvent("remote load requested: \(pair.name) \(next)")
+        await load(pair, useProjector: request.projector ?? pair.supportsVision)
+        if let failure = loadError {
+            return (500, await remoteStatus(ok: false, error: failure))
+        }
+        return (200, await remoteStatus())
+    }
+
+    func remoteUnload() async -> RemoteStatus {
+        await unloadModel()
+        return await remoteStatus()
     }
 
     /// Out of memory is the expected failure on this hardware, so it gets a message that
@@ -136,7 +310,22 @@ final class ServerController {
             record: { [log] entry in await MainActor.run { log.record(entry) } },
             stats: { [weak self] in await self?.snapshot() ?? StatsSnapshot.empty },
             logExport: { [log] in await MainActor.run { log.exportText() } },
-            runSelfTest: { [engine, grammar] in await SelfTest(engine: engine, grammar: grammar).run() }
+            runSelfTest: { [engine, grammar] in await SelfTest(engine: engine, grammar: grammar).run() },
+            adminConfig: { [weak self] in
+                guard let self else { return (503, Data()) }
+                let status = await self.remoteStatus()
+                return (200, (try? JSONEncoder.api.encode(status)) ?? Data())
+            },
+            adminLoad: { [weak self] body in
+                guard let self else { return (503, Data()) }
+                let (code, status) = await self.remoteLoad(body)
+                return (code, (try? JSONEncoder.api.encode(status)) ?? Data())
+            },
+            adminUnload: { [weak self] in
+                guard let self else { return (503, Data()) }
+                let status = await self.remoteUnload()
+                return (200, (try? JSONEncoder.api.encode(status)) ?? Data())
+            }
         )
 
         let server = LocalHTTPServer(

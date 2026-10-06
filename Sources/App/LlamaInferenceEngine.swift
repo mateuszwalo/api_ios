@@ -27,6 +27,20 @@ actor LlamaInferenceEngine: InferenceEngine {
     private(set) var loaded: LoadedModel?
 
     var isLoaded: Bool { loaded != nil }
+
+    /// The loaded configuration in one line, as it appears in every response's timings.
+    /// Compact on purpose: it goes into each result row of a comparison.
+    var configurationLabel: String {
+        guard let loaded else { return "" }
+        return [loaded.modelPath.deletingPathExtension().lastPathComponent,
+                loaded.projectorPath == nil ? "text" : "vision",
+                "ctx=\(options.contextLength)",
+                "batch=\(options.batchSize)",
+                "fa=\(options.flashAttention ? "auto" : "off")",
+                "kv=\(options.kvCacheType == 1 ? "q8_0" : "f16")",
+                "reuse=\(options.reuseKVCacheBetweenRequests ? "on" : "off")",
+                "mmap=\(options.useMemoryMapping ? "on" : "off")"].joined(separator: " ")
+    }
     var loadedModelName: String? { modelName }
     var contextLength: Int { bridge.contextLength }
     var supportsImages: Bool { bridge.supportsImages }
@@ -102,7 +116,7 @@ actor LlamaInferenceEngine: InferenceEngine {
         let cancelled = CancellationFlag()
 
         do {
-            let result = try await withTaskCancellationHandler {
+            var result = try await withTaskCancellationHandler {
                 try await onWorker { [bridge] in
                     // Imported as throwing: the Objective-C method returns a nullable object
                     // with an NSError out-parameter, which is the convention Swift folds into
@@ -115,12 +129,15 @@ actor LlamaInferenceEngine: InferenceEngine {
                                         completionTokens: r.completionTokens,
                                         prefillMilliseconds: r.prefillMilliseconds,
                                         decodeMilliseconds: r.decodeMilliseconds,
-                                        hitTokenLimit: r.hitTokenLimit)
+                                        hitTokenLimit: r.hitTokenLimit,
+                                        cachedPromptTokens: r.cachedPromptTokens)
                 }
             } onCancel: {
                 cancelled.set()
             }
-            LLMBridge.noteEvent("generate done: \(result.promptTokens)->\(result.completionTokens) tok,"
+            result.configuration = configurationLabel
+            LLMBridge.noteEvent("generate done: \(result.promptTokens)->\(result.completionTokens) tok"
+                                + " (\(result.cachedPromptTokens) cached),"
                                 + " prefill \(result.prefillMilliseconds)ms, decode \(result.decodeMilliseconds)ms")
             return result
         } catch let e as NSError where e.domain == LLMBridgeErrorDomain {

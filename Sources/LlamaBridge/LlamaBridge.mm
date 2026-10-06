@@ -8,6 +8,7 @@
 #import <string.h>
 #import <unistd.h>
 
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -227,6 +228,7 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
     o.flashAttention = YES;
     o.useMemoryMapping = YES;
     o.reuseKVCacheBetweenRequests = NO;
+    o.kvCacheType = 0;
     return o;
 }
 @end
@@ -273,6 +275,7 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
 @property (nonatomic, readwrite) NSInteger prefillMilliseconds;
 @property (nonatomic, readwrite) NSInteger decodeMilliseconds;
 @property (nonatomic, readwrite) BOOL hitTokenLimit;
+@property (nonatomic, readwrite) NSInteger cachedPromptTokens;
 @end
 
 @implementation LLMGenerationResult
@@ -287,6 +290,10 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
     LLMLoadOptions *_options;
     NSString *_modelPath;
     NSLock *_lock;
+    // The tokens whose keys and values sit in the cache, in position order. Only meaningful
+    // with reuse on, and only for text: it is what a new prompt is compared against to find
+    // the prefix that need not be evaluated again. Emptied whenever the cache is.
+    std::vector<llama_token> _cachedTokens;
 }
 
 - (instancetype)init {
@@ -415,7 +422,20 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         //
         // It was also a fidelity bug. docs/DECISIONS.md has always said iSWA is on, matching
         // the runtime the quality numbers came from; with swa_full it was not.
-        cparams.swa_full = false;
+        //
+        // The exception is prefix reuse. Keeping a shared prefix and dropping what follows it
+        // needs the sliding-window layers to still hold that prefix's last window, which a
+        // sliding cache has long since overwritten. With reuse on, the full-length cache is
+        // the price, paid knowingly.
+        cparams.swa_full = _options.reuseKVCacheBetweenRequests;
+
+        // f16 by default, as the reference runtime uses. q8_0 halves the cache and changes
+        // the numbers slightly; it needs flash attention for the V cache, which AUTO enables
+        // on Metal, and fails context creation cleanly where it cannot.
+        if (_options.kvCacheType == 1) {
+            cparams.type_k = GGML_TYPE_Q8_0;
+            cparams.type_v = GGML_TYPE_Q8_0;
+        }
         // AUTO, not ENABLED, when it is wanted.
         //
         // Forcing it makes context creation fail outright wherever the backend has no kernel
@@ -511,6 +531,7 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
     if (_ctx) { llama_free(_ctx); _ctx = nullptr; }
     if (_model) { llama_model_free(_model); _model = nullptr; }
     _modelPath = nil;
+    _cachedTokens.clear();
 }
 
 - (BOOL)isLoaded { return _ctx != nullptr; }
@@ -693,6 +714,7 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
                                         isCancelled:(BOOL (^_Nullable)(void))isCancelled
                                               error:(NSError **)error {
     [_lock lock];
+    BOOL completed = NO;
     @try {
         if (!_ctx || !_model) {
             if (error) *error = MakeError(LLMBridgeErrorNotLoaded, @"no model is loaded");
@@ -701,12 +723,6 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
 
         const llama_vocab *vocab = llama_model_get_vocab(_model);
         const uint64_t tStart = clock_gettime_nsec_np(CLOCK_MONOTONIC);
-
-        // A cold cache unless reuse was asked for: otherwise the measured prefill depends
-        // on whatever request happened to run before this one.
-        if (!_options.reuseKVCacheBetweenRequests) {
-            llama_memory_clear(llama_get_memory(_ctx), true);
-        }
 
         BOOL hasImages = NO;
         std::string prompt = [self renderPrompt:turns hasImages:&hasImages];
@@ -724,6 +740,22 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         const int32_t nCtx = (int32_t)llama_n_ctx(_ctx);
         NSInteger promptTokens = 0;
         llama_pos nPast = 0;
+
+        // Cold unless reuse was asked for, and always cold for images.
+        //
+        // An earlier version only skipped the clear when reuse was on, and then evaluated the
+        // whole new prompt anyway: the positions continued from the end of the previous
+        // request, so the model read the old conversation followed by the new one. Reuse now
+        // means what it says — the shared prefix is kept, the rest of the cache is dropped,
+        // and only the tokens after the prefix are evaluated. Image prompts are not reused:
+        // matching them would mean comparing encoded images, and they are evaluated cold.
+        const BOOL reuse = _options.reuseKVCacheBetweenRequests;
+        llama_memory_t memory = llama_get_memory(_ctx);
+        NSInteger cachedPromptTokens = 0;
+        if (!reuse || hasImages) {
+            llama_memory_clear(memory, true);
+            _cachedTokens.clear();
+        }
 
         // ---- prefill ----
         if (hasImages) {
@@ -772,8 +804,35 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
                                                (long)promptTokens, nCtx]);
                 return nil;
             }
+            // The prefix this prompt shares with what the cache holds.
+            size_t keep = 0;
+            if (reuse && !_cachedTokens.empty()) {
+                const size_t limit = std::min(_cachedTokens.size(), tokens.size());
+                while (keep < limit && _cachedTokens[keep] == tokens[keep]) ++keep;
+                // The last prompt token is always evaluated, even when the whole prompt is
+                // cached: the first generated token is sampled from its logits.
+                keep = std::min(keep, tokens.size() - 1);
+                // Drop everything after the prefix. If the cache cannot drop a partial
+                // sequence it says so, and the prompt is evaluated from scratch instead.
+                if (keep > 0 && !llama_memory_seq_rm(memory, 0, (llama_pos)keep, -1)) {
+                    AppendLogLine("APP: prefix reuse refused by the cache; evaluating cold");
+                    keep = 0;
+                }
+            }
+            if (keep == 0) {
+                llama_memory_clear(memory, true);
+            }
+            cachedPromptTokens = (NSInteger)keep;
+            nPast = (llama_pos)keep;
+            if (reuse) {
+                char note[160];
+                snprintf(note, sizeof(note), "APP: prompt %zu tokens, %zu reused from cache, %zu to evaluate",
+                         tokens.size(), keep, tokens.size() - keep);
+                AppendLogLine(note);
+            }
+
             const int32_t step = (int32_t)MAX(_options.batchSize, 1);
-            for (int32_t i = 0; i < (int32_t)tokens.size(); i += step) {
+            for (int32_t i = (int32_t)keep; i < (int32_t)tokens.size(); i += step) {
                 if (isCancelled && isCancelled()) {
                     if (error) *error = MakeError(LLMBridgeErrorCancelled, @"cancelled");
                     return nil;
@@ -786,6 +845,7 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
                 }
                 nPast += n;
             }
+            if (reuse) _cachedTokens = tokens;
         }
 
         // ---- sampler ----
@@ -868,14 +928,18 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
                 return nil;
             }
             nPast++;
+            // Only tokens actually decoded are in the cache. The last one sampled — the end
+            // token, or the one that hit a limit — never is, so it is never recorded.
+            if (reuse && !hasImages) _cachedTokens.push_back(token);
         }
         llama_sampler_free(chain);
 
         const uint64_t tEnd = clock_gettime_nsec_np(CLOCK_MONOTONIC);
         if (tFirstToken == 0) tFirstToken = tEnd;
 
-        if (!_options.reuseKVCacheBetweenRequests) {
-            llama_memory_clear(llama_get_memory(_ctx), true);
+        if (!reuse) {
+            llama_memory_clear(memory, true);
+            _cachedTokens.clear();
         }
 
         LLMGenerationResult *result = [LLMGenerationResult new];
@@ -888,8 +952,17 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         result.prefillMilliseconds = (NSInteger)((tFirstToken - tStart) / 1000000ULL);
         result.decodeMilliseconds = (NSInteger)((tEnd - tFirstToken) / 1000000ULL);
         result.hitTokenLimit = hitLimit;
+        result.cachedPromptTokens = cachedPromptTokens;
+        completed = YES;
         return result;
     } @finally {
+        // A request that did not finish leaves the cache holding a partial sequence that the
+        // record of cached tokens no longer describes. Better to start the next one cold than
+        // to match a prompt against a cache whose contents are not what they are said to be.
+        if (!completed && _ctx != nullptr) {
+            llama_memory_clear(llama_get_memory(_ctx), true);
+            _cachedTokens.clear();
+        }
         [_lock unlock];
     }
 }

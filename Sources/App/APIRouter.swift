@@ -14,6 +14,11 @@ struct APIRouter: Sendable {
     let stats: @Sendable () async -> StatsSnapshot
     let logExport: @Sendable () async -> String
     let runSelfTest: @Sendable () async -> Data
+    /// Remote configuration: current settings, reload with new ones, unload. Each returns an
+    /// HTTP status and a JSON body.
+    var adminConfig: @Sendable () async -> (Int, Data) = { (404, Data()) }
+    var adminLoad: @Sendable (Data) async -> (Int, Data) = { _ in (404, Data()) }
+    var adminUnload: @Sendable () async -> (Int, Data) = { (404, Data()) }
 
     func route(_ request: HTTPRequestMessage) async -> HTTPResponseMessage {
         switch (request.method, request.path) {
@@ -29,6 +34,15 @@ struct APIRouter: Sendable {
             return .text(200, await logExport(), contentType: "application/x-ndjson")
         case ("GET", "/v1/selftest"), ("GET", "/selftest"):
             return .json(200, await runSelfTest())
+        case ("GET", "/v1/admin/config"):
+            let (status, body) = await adminConfig()
+            return .json(status, body)
+        case ("POST", "/v1/admin/load"):
+            let (status, body) = await adminLoad(request.body)
+            return .json(status, body)
+        case ("POST", "/v1/admin/unload"):
+            let (status, body) = await adminUnload()
+            return .json(status, body)
         case ("GET", "/"):
             return .text(200, "LocalLLM Server. POST /v1/chat/completions\n")
         default:
