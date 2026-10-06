@@ -66,7 +66,14 @@ final class ServerController {
 
     // MARK: Model
 
-    func load(_ pair: ModelPair) async {
+    /// `useProjector` is a choice, not an inference.
+    ///
+    /// Pairing a model with "the only projector present" put a 4B vision tower on a 1B text
+    /// model, and mtmd does not return an error for that — it aborts, taking the app with
+    /// it. The pairing heuristic cannot tell the two apart from filenames alone, because the
+    /// published projector is called `mmproj-model-f16.gguf` and shares nothing with the
+    /// model's name, so the decision belongs to whoever can see both.
+    func load(_ pair: ModelPair, useProjector: Bool = true) async {
         isLoadingModel = true
         loadError = nil
         defer { isLoadingModel = false }
@@ -83,7 +90,7 @@ final class ServerController {
         do {
             try await engine.load(.init(name: pair.name,
                                         modelPath: pair.model.url,
-                                        projectorPath: pair.projector?.url),
+                                        projectorPath: useProjector ? pair.projector?.url : nil),
                                   options: options)
             selectedPair = pair
         } catch {

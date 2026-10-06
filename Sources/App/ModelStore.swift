@@ -22,6 +22,14 @@ struct ModelFile: Identifiable, Sendable, Equatable {
 struct ModelPair: Identifiable, Sendable, Equatable {
     let model: ModelFile
     let projector: ModelFile?
+    /// True when the projector was paired by elimination rather than by evidence.
+    ///
+    /// Published projectors are called `mmproj-model-f16.gguf` and share nothing with the
+    /// model's filename, so with one projector and several models there is no way to tell
+    /// from names alone which it belongs to. Loading the wrong one does not fail politely:
+    /// mtmd aborts and takes the app with it. When the pairing is a guess, vision starts
+    /// switched off and the person loading the model decides.
+    var projectorIsAmbiguous = false
     var id: String { model.id }
     var name: String { model.url.deletingPathExtension().lastPathComponent }
     var totalBytes: UInt64 { model.sizeBytes + (projector?.sizeBytes ?? 0) }
@@ -73,8 +81,16 @@ final class ModelStore {
             .sorted { $0.name < $1.name }
 
         let projectors = files.filter(\.isProjector)
-        pairs = files.filter { !$0.isProjector }.map { model in
-            ModelPair(model: model, projector: Self.bestProjector(for: model, among: projectors))
+        let models = files.filter { !$0.isProjector }
+        pairs = models.map { model in
+            let projector = Self.bestProjector(for: model, among: projectors)
+            let named = projector.map {
+                Self.sharedPrefixLength(model.name.lowercased(), $0.name.lowercased()) >= 8
+            } ?? false
+            // One projector and one model is unambiguous whatever they are called. More than
+            // one model and nothing in the names to go on is a guess, and says so.
+            let ambiguous = projector != nil && !named && models.count > 1
+            return ModelPair(model: model, projector: projector, projectorIsAmbiguous: ambiguous)
         }
     }
 

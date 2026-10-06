@@ -25,18 +25,51 @@ NSErrorDomain const LLMBridgeErrorDomain = @"LLMBridgeErrorDomain";
 static std::mutex gLogMutex;
 static std::vector<std::string> gLogLines;
 static const size_t kLogLineLimit = 300;
+static FILE *gLogFile = nullptr;
+
+// Written to disk as well as kept in memory, and flushed line by line.
+//
+// The failures worth reading are the ones that end the process: mtmd aborts on a mismatched
+// projector rather than returning an error, and the in-memory copy dies with the app. A file
+// flushed after every line survives that, so the next launch can serve what the last one
+// said on its way out. llama.cpp logs rarely outside of loading, so the cost does not show.
+static NSString *EngineLogPath(void) {
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                              NSUserDomainMask, YES).firstObject;
+    NSString *directory = [documents stringByAppendingPathComponent:@"logs"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:directory
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+    return [directory stringByAppendingPathComponent:@"engine.log"];
+}
+
+static void OpenLogFileLocked(void) {
+    if (gLogFile != nullptr) return;
+    NSString *path = EngineLogPath();
+    // Start fresh past a couple of megabytes: the tail is what gets read, and an unbounded
+    // file is a poor neighbour on a device being filled with 3 GB models.
+    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    if ([attributes fileSize] > 2 * 1024 * 1024) {
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    }
+    gLogFile = fopen(path.fileSystemRepresentation, "a");
+}
 
 static void AppendLogLine(const char *text) {
     if (text == nullptr) return;
     std::string line(text);
-    while (!line.empty() && (line.back() == '
-' || line.back() == '')) line.pop_back();
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
     if (line.empty()) return;
 
     std::lock_guard<std::mutex> lock(gLogMutex);
     gLogLines.push_back(line);
     if (gLogLines.size() > kLogLineLimit) {
         gLogLines.erase(gLogLines.begin(), gLogLines.begin() + (gLogLines.size() - kLogLineLimit));
+    }
+    OpenLogFileLocked();
+    if (gLogFile != nullptr) {
+        fputs(line.c_str(), gLogFile);
+        fputc('\n', gLogFile);
+        fflush(gLogFile);
     }
 }
 
@@ -135,6 +168,9 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         _options = [LLMLoadOptions defaults];
         static dispatch_once_t once;
         dispatch_once(&once, ^{
+            // Marks each launch, so lines from consecutive processes — including one that
+            // crashed — can be told apart when the file is read back.
+            AppendLogLine("===== engine started =====");
             llama_backend_init();
             // llama.cpp is chatty at info level and every line costs time on a device that
             // is being timed. Warnings and errors still come through.
@@ -646,6 +682,19 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
 #pragma mark Memory
 
 + (NSArray<NSString *> *)recentEngineLog {
+    // The file first, not the in-memory copy: after a crash memory is empty, and the file
+    // still holds what the previous process said before it died — the part worth reading.
+    NSString *contents = [NSString stringWithContentsOfFile:EngineLogPath()
+                                                   encoding:NSUTF8StringEncoding error:nil];
+    if (contents.length > 0) {
+        NSMutableArray<NSString *> *fromFile = [NSMutableArray array];
+        for (NSString *line in [contents componentsSeparatedByCharactersInSet:
+                                [NSCharacterSet newlineCharacterSet]]) {
+            if (line.length > 0) [fromFile addObject:line];
+        }
+        NSUInteger start = fromFile.count > kLogLineLimit ? fromFile.count - kLogLineLimit : 0;
+        return [fromFile subarrayWithRange:NSMakeRange(start, fromFile.count - start)];
+    }
     std::lock_guard<std::mutex> lock(gLogMutex);
     NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:gLogLines.size()];
     for (const auto &line : gLogLines) {

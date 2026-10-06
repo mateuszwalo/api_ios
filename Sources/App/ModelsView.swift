@@ -96,6 +96,12 @@ struct ModelsView: View {
 private struct ModelRow: View {
     @Environment(ServerController.self) private var controller
     let pair: ModelPair
+    @State private var useProjector: Bool
+
+    init(pair: ModelPair) {
+        self.pair = pair
+        _useProjector = State(initialValue: !pair.projectorIsAmbiguous)
+    }
 
     var body: some View {
         let isLoaded = controller.selectedPair?.id == pair.id
@@ -113,11 +119,25 @@ private struct ModelRow: View {
                 .font(.footnote)
                 .foregroundStyle(pair.supportsVision ? Color.secondary : Color.orange)
 
+            if pair.supportsVision {
+                Toggle("Load with projector (vision)", isOn: $useProjector)
+                    .font(.footnote)
+                    .disabled(isLoaded || controller.isRunning)
+                if pair.projectorIsAmbiguous {
+                    Text("The projector here could belong to another model. Loading a mismatched one terminates the app, so it is off until you confirm it.")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
+                if !useProjector {
+                    Text("Text only. Requests carrying an image will be refused.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
             HStack {
                 Button(isLoaded ? "Unload" : "Load") {
                     Task {
                         if isLoaded { await controller.unloadModel() }
-                        else { await controller.load(pair) }
+                        else { await controller.load(pair, useProjector: useProjector) }
                     }
                 }
                 .buttonStyle(.bordered)
