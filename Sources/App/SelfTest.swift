@@ -32,7 +32,12 @@ struct SelfTest: Sendable {
 
         // The engine's own words, last lines first in usefulness: when a load fails this is
         // where the reason is, and it is the only part of this report that needs no model.
-        report["engine_log"] = Array(LLMBridge.recentEngineLog().suffix(80))
+        let fullLog = LLMBridge.recentEngineLog()
+        report["engine_log"] = Array(fullLog.suffix(80))
+        // The milestones and crash records alone, from the whole retained log. A model load
+        // prints hundreds of lines of its own, which push the few that matter — what was
+        // being loaded, what was asked for, how a process died — out of any short tail.
+        report["engine_events"] = Self.importantLines(fullLog)
 
         report["chat_template"] = await checkChatTemplate()
         report["image_tokens"] = await checkImageTokens()
@@ -52,6 +57,20 @@ struct SelfTest: Sendable {
             return Data("{\"error\":\"the self-test report could not be serialised\"}".utf8)
         }
         return data
+    }
+
+    /// Application milestones, launch markers and complete crash records, in order.
+    static func importantLines(_ log: [String]) -> [String] {
+        var kept: [String] = []
+        var inCrashRecord = false
+        for line in log {
+            if line.hasPrefix("FATAL") { inCrashRecord = true }
+            if inCrashRecord || line.hasPrefix("APP:") || line.hasPrefix("=====") {
+                kept.append(line)
+            }
+            if line.contains("end of crash record") { inCrashRecord = false }
+        }
+        return Array(kept.suffix(150))
     }
 
     /// Reduces any value to the handful of types JSONSerialization accepts.

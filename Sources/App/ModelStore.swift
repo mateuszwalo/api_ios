@@ -83,6 +83,20 @@ final class ModelStore {
         let projectors = files.filter(\.isProjector)
         let models = files.filter { !$0.isProjector }
         pairs = models.map { model in
+            // The catalogue knows what it published, so a model it lists is paired by fact:
+            // the 1B entry has no projector at all, and the 4B entry names its own. That
+            // settles the case that terminated the app — a 4B vision tower attached to the 1B
+            // text model — and it does so for files downloaded before this rule existed,
+            // because it reads names the catalogue already holds.
+            if let entry = ModelCatalog.entry(forModelFile: model.name) {
+                guard let projectorName = entry.projectorURL?.lastPathComponent else {
+                    return ModelPair(model: model, projector: nil)
+                }
+                let projector = projectors.first { $0.name == projectorName }
+                return ModelPair(model: model, projector: projector, projectorIsAmbiguous: false)
+            }
+
+            // A file from outside the catalogue: pair by name, and say when it is a guess.
             let projector = Self.bestProjector(for: model, among: projectors)
             let named = projector.map {
                 Self.sharedPrefixLength(model.name.lowercased(), $0.name.lowercased()) >= 8
@@ -133,6 +147,11 @@ enum ModelCatalog {
         let modelURL: URL
         let projectorURL: URL?
         let approximateBytes: UInt64
+    }
+
+    /// The catalogue entry a downloaded model file came from, matched by file name.
+    static func entry(forModelFile name: String) -> Entry? {
+        entries.first { $0.modelURL.lastPathComponent.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     static let entries: [Entry] = [

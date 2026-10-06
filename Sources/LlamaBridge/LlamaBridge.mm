@@ -28,7 +28,9 @@ NSErrorDomain const LLMBridgeErrorDomain = @"LLMBridgeErrorDomain";
 // over HTTP. Without them a refused context is just a null return and a guess.
 static std::mutex gLogMutex;
 static std::vector<std::string> gLogLines;
-static const size_t kLogLineLimit = 300;
+// Generous on purpose: one model load makes llama.cpp print a few hundred lines, and a crash
+// record from the previous launch has to survive a fresh launch's start-up output.
+static const size_t kLogLineLimit = 2000;
 static FILE *gLogFile = nullptr;
 // The same file as a raw descriptor, for the crash handler: a signal handler may only call
 // async-signal-safe functions, which rules out stdio and anything that allocates.
@@ -427,7 +429,28 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
             vparams.print_timings = false;
             vparams.n_threads = cparams.n_threads;
             vparams.media_marker = mtmd_default_marker();
+
+            // No warm-up encode at load time.
+            //
+            // By default mtmd runs one image through the vision tower as soon as the
+            // projector loads, which allocates the encoder's whole compute buffer then and
+            // there. Gemma 3's encoder works on 4096 patches; without flash attention its
+            // attention matrix alone is on the order of a gigabyte. On an 8 GB iPad that
+            // allocation, on top of the 4B weights and a long context, is what the system
+            // kills the process for — at the moment of pressing Load, with nothing to read
+            // afterwards. Skipping it means the cost is paid by the first image request
+            // instead, where a failure can be reported rather than suffered.
+            vparams.warmup = false;
+            vparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
+
+            {
+                char note[256];
+                snprintf(note, sizeof(note), "APP: loading projector, available %.2f GB",
+                         (double)os_proc_available_memory() / 1073741824.0);
+                AppendLogLine(note);
+            }
             _mtmd = mtmd_init_from_file(projectorPath.fileSystemRepresentation, _model, vparams);
+            AppendLogLine(_mtmd ? "APP: projector loaded" : "APP: projector failed to load");
             if (_mtmd == nullptr) {
                 [self unloadLocked];
                 if (error) *error = MakeError(LLMBridgeErrorProjectorLoadFailed,
@@ -682,9 +705,18 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
                 return nil;
             }
             llama_pos newPast = 0;
+            {
+                // The vision tower's compute buffer is allocated here now that the load-time
+                // warm-up is off, so this is where memory runs out if it is going to.
+                char note[256];
+                snprintf(note, sizeof(note), "APP: encoding image prompt (%ld tokens), available %.2f GB",
+                         (long)promptTokens, (double)os_proc_available_memory() / 1073741824.0);
+                AppendLogLine(note);
+            }
             int32_t rc = mtmd_helper_eval_chunks(_mtmd, _ctx, chunks, /*n_past=*/0, /*seq_id=*/0,
                                                  (int32_t)MAX(_options.batchSize, 1),
                                                  /*logits_last=*/true, &newPast);
+            AppendLogLine(rc == 0 ? "APP: image prompt evaluated" : "APP: image prompt evaluation failed");
             mtmd_input_chunks_free(chunks);
             if (rc != 0) {
                 if (error) *error = MakeError(LLMBridgeErrorDecodeFailed,
