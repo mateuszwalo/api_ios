@@ -404,6 +404,18 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         cparams.n_outputs_max = 1;
         cparams.n_outputs_max_per_seq = 1;
         cparams.n_seq_max = 1;
+
+        // Sliding-window layers keep a sliding-window cache, as the reference runtime does.
+        //
+        // llama_context_default_params() sets swa_full, which gives every sliding-window
+        // layer a cache as long as the whole context. Gemma 3 has 29 such layers with a
+        // 1024-token window and only 5 global ones, so at 24576 tokens that is 2784 MiB of
+        // cache where about 150 would do — measured on the device, from the log of the crash
+        // it caused: the projector's 812 MiB no longer fitted and the allocation aborted.
+        //
+        // It was also a fidelity bug. docs/DECISIONS.md has always said iSWA is on, matching
+        // the runtime the quality numbers came from; with swa_full it was not.
+        cparams.swa_full = false;
         // AUTO, not ENABLED, when it is wanted.
         //
         // Forcing it makes context creation fail outright wherever the backend has no kernel
@@ -443,11 +455,33 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
             vparams.warmup = false;
             vparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
 
+            // Checked before loading, because a failed allocation inside mtmd is not an error
+            // it returns: it is a GGML_ASSERT, and the process ends. The projector's weights
+            // go into one buffer the size of the file (812 MiB measured for the 851 MB file),
+            // so the file size plus a margin for its working buffers is a sound lower bound.
+            const uint64_t available = os_proc_available_memory();
+            NSDictionary *projectorAttributes =
+                [[NSFileManager defaultManager] attributesOfItemAtPath:projectorPath error:nil];
+            const uint64_t projectorBytes = [projectorAttributes fileSize];
+            const uint64_t needed = projectorBytes + 384ull * 1024 * 1024;
             {
                 char note[256];
-                snprintf(note, sizeof(note), "APP: loading projector, available %.2f GB",
-                         (double)os_proc_available_memory() / 1073741824.0);
+                snprintf(note, sizeof(note),
+                         "APP: loading projector (%.2f GB), available %.2f GB, need about %.2f GB",
+                         (double)projectorBytes / 1073741824.0,
+                         (double)available / 1073741824.0, (double)needed / 1073741824.0);
                 AppendLogLine(note);
+            }
+            if (available > 0 && projectorBytes > 0 && available < needed) {
+                [self unloadLocked];
+                AppendLogLine("APP: projector refused: not enough memory");
+                if (error) *error = MakeError(LLMBridgeErrorProjectorLoadFailed,
+                    [NSString stringWithFormat:
+                     @"Not enough memory for the vision projector: it needs about %.2f GB and "
+                     @"%.2f GB is available. Lower the context length in the Server tab and "
+                     @"load again.",
+                     (double)needed / 1073741824.0, (double)available / 1073741824.0]);
+                return NO;
             }
             _mtmd = mtmd_init_from_file(projectorPath.fileSystemRepresentation, _model, vparams);
             AppendLogLine(_mtmd ? "APP: projector loaded" : "APP: projector failed to load");

@@ -17,7 +17,7 @@ na realnym ruchu OpenAI-owym. Wartosci w tabeli 1 odwzorowuja konfiguracje odnie
 | kwantyzacja | Q4_K_M | `ggml-org/gemma-3-4b-it-GGUF` |
 | mmproj | f16 (851 MB) | to samo repo |
 | KV cache | f16 | domyslne ollamy |
-| iSWA | wlaczone | Gemma 3: pelne okno dostaje 5 z 34 warstw |
+| iSWA | wlaczone (`swa_full = false`) | Gemma 3: pelne okno dostaje 5 z 34 warstw; patrz uwaga nizej |
 | flash attention | on | domyslne na Metalu |
 | mmap | on | mniejszy szczyt pamieci |
 | pan & scan | WYLACZONY | jeden kafelek = 256 tokenow na obraz |
@@ -27,6 +27,14 @@ na realnym ruchu OpenAI-owym. Wartosci w tabeli 1 odwzorowuja konfiguracje odnie
 Kontrola poprawnosci kafelkowania jest tania: krotki prompt + jeden obraz musi dac
 `prompt_tokens` rzedu 298 (256 obrazu + ~42 tekstu). Wartosc rzedu 550 czy 810 oznacza
 wlaczony pan & scan i natychmiast psuje porownywalnosc.
+
+**Uwaga o iSWA — do wersji z 2026-10-06 ta tabela byla nieprawdziwa.** `llama_context_default_params()`
+ustawia `swa_full = true`, co daje kazdej z 29 warstw z przesuwnym oknem cache na pelna dlugosc
+kontekstu zamiast na 1024 tokeny. Zmierzone na iPadzie: przy kontekscie 24576 cache KV zajmowal
+2784 MiB zamiast ~150 MiB, a 812 MiB projektora wizyjnego juz sie nie miescilo i alokacja
+przerywala proces. Od tej wersji `swa_full = false` — zgodnie z runtime'em, na ktorym mierzono
+jakosc. Pomiary zrobione wczesniej nie istnieja (zaden model nie zaladowal sie wtedy z projektorem),
+wiec nic nie trzeba powtarzac.
 
 ## 2. Decyzje architektoniczne
 
