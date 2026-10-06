@@ -91,7 +91,7 @@ struct ServerView: View {
                         Text("f16 (reference)").tag(0)
                         Text("q8_0 (half memory)").tag(1)
                     }
-                    Text("All settings apply at the next load, and are remembered across launches.\n\nReuse: a text request skips evaluating the prefix it shares with the previous one — a large saving when many calls share one long system prompt. Prefill speed is then reported over the evaluated tokens only. It keeps the full-length sliding-window cache, roughly 120 KB per context token for the 4B model, so pair it with a context of 16384 or less, or with q8_0.\n\nq8_0 halves the cache's memory and changes results slightly: re-measure quality before comparing with f16 numbers.")
+                    Text("All settings apply at the next load, and are remembered across launches.\n\nReuse: a text request skips evaluating the prefix it shares with the previous one — a large saving when many calls share one long system prompt. Prefill speed is then reported over the evaluated tokens only. It applies when the previous answer ran no more than about one batch past the shared prefix, so with reuse on raise Batch to 2048 or more. Image requests are always evaluated in full.\n\nq8_0 halves the cache's memory and changes results slightly: re-measure quality before comparing with f16 numbers.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 

@@ -423,11 +423,12 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         // It was also a fidelity bug. docs/DECISIONS.md has always said iSWA is on, matching
         // the runtime the quality numbers came from; with swa_full it was not.
         //
-        // The exception is prefix reuse. Keeping a shared prefix and dropping what follows it
-        // needs the sliding-window layers to still hold that prefix's last window, which a
-        // sliding cache has long since overwritten. With reuse on, the full-length cache is
-        // the price, paid knowingly.
-        cparams.swa_full = _options.reuseKVCacheBetweenRequests;
+        // Also with prefix reuse on. An earlier version switched to the full-length cache when
+        // reuse was enabled, and image requests then came back wrong: measured on the device,
+        // the same photo and question answered correctly with reuse off and with the question
+        // echoed back with it on. The sliding cache stays, and reuse is applied only when the
+        // cache still holds what the prefix needs — see the prefix check in generation.
+        cparams.swa_full = false;
 
         // f16 by default, as the reference runtime uses. q8_0 halves the cache and changes
         // the numbers slightly; it needs flash attention for the V cache, which AUTO enables
@@ -812,6 +813,27 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
                 // The last prompt token is always evaluated, even when the whole prompt is
                 // cached: the first generated token is sampled from its logits.
                 keep = std::min(keep, tokens.size() - 1);
+
+                // The sliding-window layers must still hold the window that ends at the
+                // prefix. Their cache keeps only the last (window + batch) positions, so after
+                // a request whose tail ran far past the shared prefix, the cells the prefix
+                // needs have been overwritten — and reusing it anyway would attend to whatever
+                // replaced them. In that case the prompt is evaluated cold. A larger batch
+                // keeps more positions and lets longer tails be reused.
+                const int32_t nSwa = llama_model_n_swa(_model);
+                if (keep > 0 && nSwa > 0) {
+                    const llama_pos posMin = llama_memory_seq_pos_min(memory, 0);
+                    const llama_pos needed = std::max<llama_pos>(0, (llama_pos)keep - nSwa);
+                    if (posMin < 0 || posMin > needed) {
+                        char note[200];
+                        snprintf(note, sizeof(note),
+                                 "APP: prefix of %zu tokens not reusable: sliding-window cache starts at %d, "
+                                 "needs %d (raise the batch size to keep more)",
+                                 keep, (int)posMin, (int)needed);
+                        AppendLogLine(note);
+                        keep = 0;
+                    }
+                }
                 // Drop everything after the prefix. If the cache cannot drop a partial
                 // sequence it says so, and the prompt is evaluated from scratch instead.
                 if (keep > 0 && !llama_memory_seq_rm(memory, 0, (llama_pos)keep, -1)) {

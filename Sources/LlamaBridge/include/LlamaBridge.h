@@ -34,9 +34,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// already in the cache and evaluates only the rest — realistic for a pipeline that sends
 /// the same long system prompt many times over. Image requests are always evaluated cold.
 ///
-/// Turning it on also keeps the sliding-window layers' cache at full length (`swa_full`),
-/// which removing a prefix's tail requires. That costs memory: roughly 120 KiB per context
-/// token for Gemma 3 4B, so it pairs with a shorter context or a quantised KV cache.
+/// The sliding-window layers keep only the last (window + batch) positions, so a prefix is
+/// reused only when the previous request ran no more than about one batch past it; beyond
+/// that the prompt is evaluated cold, and the log says so. A larger batch makes reuse apply
+/// to longer answers. It costs no extra memory beyond that larger batch.
 @property (nonatomic) BOOL reuseKVCacheBetweenRequests;
 /// 0 = f16 (the default, as the reference runtime uses), 1 = q8_0. Quantising halves the
 /// cache's memory and changes the numbers slightly, so results stop being directly
