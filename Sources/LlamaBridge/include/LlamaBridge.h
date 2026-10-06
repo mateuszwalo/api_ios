@@ -150,6 +150,14 @@ typedef NS_ENUM(NSInteger, LLMBridgeErrorCode) {
                                         isCancelled:(BOOL (^_Nullable)(void))isCancelled
                                               error:(NSError **)error;
 
+/// The last lines llama.cpp itself printed.
+///
+/// Its diagnostics go to stderr, which on a sideloaded device nobody can read. When loading
+/// fails, the reason is almost always in there — an unsupported kernel, a backend that would
+/// not initialise, an allocation that was refused and by how much — and without it the
+/// caller is left inferring from a null return. Kept so a failure can be read over HTTP.
++ (NSArray<NSString *> *)recentEngineLog;
+
 /// Bytes the OS attributes to this process, from `phys_footprint`.
 ///
 /// Not RSS: the memory killer accounts for footprint, so that is the figure a memory

@@ -4,6 +4,7 @@
 #import <os/proc.h>
 #import <time.h>
 
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,29 @@
 #include "json-schema-to-grammar.h"
 
 NSErrorDomain const LLMBridgeErrorDomain = @"LLMBridgeErrorDomain";
+
+#pragma mark - Engine log
+
+// llama.cpp reports why it failed through its log callback and nowhere else. On a sideloaded
+// device stderr goes nowhere anybody can read, so the last lines are kept here and served
+// over HTTP. Without them a refused context is just a null return and a guess.
+static std::mutex gLogMutex;
+static std::vector<std::string> gLogLines;
+static const size_t kLogLineLimit = 300;
+
+static void AppendLogLine(const char *text) {
+    if (text == nullptr) return;
+    std::string line(text);
+    while (!line.empty() && (line.back() == '
+' || line.back() == '')) line.pop_back();
+    if (line.empty()) return;
+
+    std::lock_guard<std::mutex> lock(gLogMutex);
+    gLogLines.push_back(line);
+    if (gLogLines.size() > kLogLineLimit) {
+        gLogLines.erase(gLogLines.begin(), gLogLines.begin() + (gLogLines.size() - kLogLineLimit));
+    }
+}
 
 static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
     return [NSError errorWithDomain:LLMBridgeErrorDomain
@@ -115,9 +139,8 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
             // llama.cpp is chatty at info level and every line costs time on a device that
             // is being timed. Warnings and errors still come through.
             llama_log_set([](enum ggml_log_level level, const char *text, void *) {
-                if (level >= GGML_LOG_LEVEL_WARN && text != nullptr) {
-                    fputs(text, stderr);
-                }
+                AppendLogLine(text);
+                if (level >= GGML_LOG_LEVEL_WARN && text != nullptr) fputs(text, stderr);
             }, nullptr);
         });
     }
@@ -206,7 +229,14 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         cparams.n_outputs_max = 1;
         cparams.n_outputs_max_per_seq = 1;
         cparams.n_seq_max = 1;
-        cparams.flash_attn_type = _options.flashAttention ? LLAMA_FLASH_ATTN_TYPE_ENABLED
+        // AUTO, not ENABLED, when it is wanted.
+        //
+        // Forcing it makes context creation fail outright wherever the backend has no kernel
+        // for the model's head size — Gemma 3 uses 256, which is not universally covered —
+        // and the failure arrives as a null context with no explanation attached. AUTO lets
+        // llama.cpp use flash attention where it can and quietly do without where it cannot,
+        // which is the behaviour wanted here: a slower server beats one that will not start.
+        cparams.flash_attn_type = _options.flashAttention ? LLAMA_FLASH_ATTN_TYPE_AUTO
                                                           : LLAMA_FLASH_ATTN_TYPE_DISABLED;
 
         _ctx = llama_init_from_model(_model, cparams);
@@ -614,6 +644,16 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
 }
 
 #pragma mark Memory
+
++ (NSArray<NSString *> *)recentEngineLog {
+    std::lock_guard<std::mutex> lock(gLogMutex);
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:gLogLines.size()];
+    for (const auto &line : gLogLines) {
+        NSString *converted = [NSString stringWithUTF8String:line.c_str()];
+        if (converted) [lines addObject:converted];
+    }
+    return lines;
+}
 
 + (uint64_t)physicalFootprintBytes {
     task_vm_info_data_t info;

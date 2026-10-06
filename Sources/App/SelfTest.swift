@@ -30,6 +30,10 @@ struct SelfTest: Sendable {
             "thermal_state": MemoryProbe.thermalStateName(),
         ]
 
+        // The engine's own words, last lines first in usefulness: when a load fails this is
+        // where the reason is, and it is the only part of this report that needs no model.
+        report["engine_log"] = LLMBridge.recentEngineLog().suffix(60)
+
         report["chat_template"] = await checkChatTemplate()
         report["image_tokens"] = await checkImageTokens()
         report["grammar"] = checkGrammars()

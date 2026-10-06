@@ -219,5 +219,5 @@ extension StatsSnapshot {
                                      supportsImages: false, queueDepth: 0, served: 0, failed: 0,
                                      footprintBytes: 0, peakFootprintBytes: 0,
                                      availableMemoryBytes: 0, thermalState: "unknown",
-                                     uptimeSeconds: 0)
+                                     uptimeSeconds: 0, lastError: nil)
 }
