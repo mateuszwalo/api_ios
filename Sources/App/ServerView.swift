@@ -78,19 +78,16 @@ struct ServerView: View {
                             .keyboardType(.numberPad)
                             .disabled(controller.isRunning)
                     }
+                    // These take effect at the next load, not immediately, so there is nothing
+                    // to protect by locking them while the server runs.
                     Stepper("Context: \(controller.contextLength)",
                             value: $controller.contextLength, in: 2048...131072, step: 2048)
-                        .disabled(controller.isRunning)
                     Stepper("Batch: \(controller.batchSize)",
                             value: $controller.batchSize, in: 64...4096, step: 64)
-                        .disabled(controller.isRunning)
                     Toggle("Flash attention", isOn: $controller.flashAttention)
-                        .disabled(controller.isRunning)
                     Toggle("Memory mapping", isOn: $controller.useMemoryMapping)
-                        .disabled(controller.isRunning)
                     Toggle("Reuse KV cache between requests", isOn: $controller.reuseKVCache)
-                        .disabled(controller.isRunning)
-                    Text("Reuse makes repeated prompts much faster and makes measured prefill depend on what ran before. Off for measurement, on for a realistic deployment.")
+                    Text("Context, batch and the toggles apply at the next load. Reuse makes repeated prompts much faster and makes measured prefill depend on what ran before: off for measurement, on for a realistic deployment.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 

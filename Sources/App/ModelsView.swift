@@ -122,7 +122,7 @@ private struct ModelRow: View {
             if pair.supportsVision {
                 Toggle("Load with projector (vision)", isOn: $useProjector)
                     .font(.footnote)
-                    .disabled(isLoaded || controller.isRunning)
+                    .disabled(isLoaded)
                 if pair.projectorIsAmbiguous {
                     Text("The projector here could belong to another model. Loading a mismatched one terminates the app, so it is off until you confirm it.")
                         .font(.caption2).foregroundStyle(.orange)
@@ -141,7 +141,11 @@ private struct ModelRow: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(controller.isLoadingModel || controller.isRunning)
+                // Loading while the server runs is safe: load and generate share one serial
+                // inference thread, so a load waits for any request in flight, and requests
+                // arriving meanwhile get 503, which the client retries. Requiring a stop first
+                // only invited the server to be left stopped afterwards, which happened.
+                .disabled(controller.isLoadingModel)
 
                 if controller.isLoadingModel {
                     ProgressView().controlSize(.small)

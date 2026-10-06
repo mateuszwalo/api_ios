@@ -171,6 +171,17 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
             // Marks each launch, so lines from consecutive processes — including one that
             // crashed — can be told apart when the file is read back.
             AppendLogLine("===== engine started =====");
+
+            // Assertion failures bypass the log callback entirely: GGML_ASSERT goes straight
+            // to ggml_abort, which prints and kills the process. That is the one message that
+            // explains a crash, and it was the one never written down. The abort callback
+            // sees it first, so it goes to the log file — flushed — before the process ends.
+            ggml_set_abort_callback([](const char *message) {
+                std::string line = std::string("FATAL: ") + (message ? message : "(no message)");
+                AppendLogLine(line.c_str());
+                if (message) fputs(message, stderr);
+            });
+
             llama_backend_init();
             // llama.cpp is chatty at info level and every line costs time on a device that
             // is being timed. Warnings and errors still come through.
@@ -622,11 +633,18 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
                 return nil;
             }
 
+            // llama_sampler_sample accepts the token itself. It must not be accepted again.
+            //
+            // An earlier version did, and for a plain greedy sampler that is harmless — accept
+            // is a no-op there. For the grammar sampler it is not: the token is applied to the
+            // grammar state twice, the state advances past where the output actually is, and
+            // the next token finds no legal continuation. llama.cpp treats that as a fatal
+            // error and aborts the process. It surfaced on the first request ever to carry a
+            // schema, which is the request this whole server exists to serve.
             llama_token token = llama_sampler_sample(chain, _ctx, -1);
             if (tFirstToken == 0) tFirstToken = clock_gettime_nsec_np(CLOCK_MONOTONIC);
             if (llama_vocab_is_eog(vocab, token)) break;
 
-            llama_sampler_accept(chain, token);
             const int32_t n = llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, true);
             if (n > 0) out.append(piece, n);
             completion++;
@@ -680,6 +698,11 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
 }
 
 #pragma mark Memory
+
++ (void)noteEvent:(NSString *)event {
+    std::string line = std::string("APP: ") + (event.UTF8String ? event.UTF8String : "");
+    AppendLogLine(line.c_str());
+}
 
 + (NSArray<NSString *> *)recentEngineLog {
     // The file first, not the in-memory copy: after a crash memory is empty, and the file

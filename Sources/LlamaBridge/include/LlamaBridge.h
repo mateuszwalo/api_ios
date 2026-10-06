@@ -158,6 +158,13 @@ typedef NS_ENUM(NSInteger, LLMBridgeErrorCode) {
 /// caller is left inferring from a null return. Kept so a failure can be read over HTTP.
 + (NSArray<NSString *> *)recentEngineLog;
 
+/// Records an application event in the same file as llama.cpp's own output.
+///
+/// A crash leaves the last lines standing; interleaving the app's own milestones with the
+/// engine's — model loading with these settings, request with a grammar started — is what
+/// turns "it died" into "it died on the first token of a schema-constrained request".
++ (void)noteEvent:(NSString *)event;
+
 /// Bytes the OS attributes to this process, from `phys_footprint`.
 ///
 /// Not RSS: the memory killer accounts for footprint, so that is the figure a memory

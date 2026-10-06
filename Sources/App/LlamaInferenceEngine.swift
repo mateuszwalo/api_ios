@@ -34,11 +34,22 @@ actor LlamaInferenceEngine: InferenceEngine {
 
     func load(_ model: LoadedModel, options: LLMLoadOptions) async throws {
         self.options = options
-        try await onWorker { [bridge] in
-            try bridge.loadModel(atPath: model.modelPath.path,
-                                 projectorPath: model.projectorPath?.path,
-                                 options: options)
+        LLMBridge.noteEvent("load \(model.modelPath.lastPathComponent)"
+                            + " projector=\(model.projectorPath?.lastPathComponent ?? "none")"
+                            + " ctx=\(options.contextLength) batch=\(options.batchSize)"
+                            + " fa=\(options.flashAttention) mmap=\(options.useMemoryMapping)"
+                            + " available=\(MemoryProbe.format(MemoryProbe.availableBytes()))")
+        do {
+            try await onWorker { [bridge] in
+                try bridge.loadModel(atPath: model.modelPath.path,
+                                     projectorPath: model.projectorPath?.path,
+                                     options: options)
+            }
+        } catch {
+            LLMBridge.noteEvent("load failed: \((error as NSError).localizedDescription)")
+            throw error
         }
+        LLMBridge.noteEvent("load ok, footprint=\(MemoryProbe.format(MemoryProbe.footprintBytes()))")
         loaded = model
         modelName = model.name
     }
@@ -81,12 +92,17 @@ actor LlamaInferenceEngine: InferenceEngine {
         opts.stopSequences = request.stopSequences
         opts.seed = request.seed.map { Int64($0) } ?? -1
 
+        let imageCount = request.prompt.turns.reduce(0) { $0 + $1.images.count }
+        LLMBridge.noteEvent("generate start: max_tokens=\(request.maxTokens)"
+                            + " grammar=\(request.grammar == nil ? "no" : "\(request.grammar!.utf8.count)B")"
+                            + " images=\(imageCount) temperature=\(request.temperature)")
+
         // The flag is read from the inference thread and written from whichever task is
         // cancelled, so it cannot be ordinary mutable state.
         let cancelled = CancellationFlag()
 
         do {
-            return try await withTaskCancellationHandler {
+            let result = try await withTaskCancellationHandler {
                 try await onWorker { [bridge] in
                     // Imported as throwing: the Objective-C method returns a nullable object
                     // with an NSError out-parameter, which is the convention Swift folds into
@@ -104,7 +120,11 @@ actor LlamaInferenceEngine: InferenceEngine {
             } onCancel: {
                 cancelled.set()
             }
+            LLMBridge.noteEvent("generate done: \(result.promptTokens)->\(result.completionTokens) tok,"
+                                + " prefill \(result.prefillMilliseconds)ms, decode \(result.decodeMilliseconds)ms")
+            return result
         } catch let e as NSError where e.domain == LLMBridgeErrorDomain {
+            LLMBridge.noteEvent("generate failed: \(e.localizedDescription)")
             if e.code == LLMBridgeErrorCode.cancelled.rawValue { throw CancellationError() }
             throw Self.translate(e)
         }
