@@ -56,7 +56,13 @@ final class LocalHTTPServer: @unchecked Sendable {
         parameters.includePeerToPeer = false
 
         do {
-            let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+            // Port 0 typed into the settings field would make this unwrap trap and take the
+            // app down; reported as a failure to start instead.
+            guard let endpointPort = NWEndpoint.Port(rawValue: port), port > 0 else {
+                onStateChange(.failed("invalid port \(port)"))
+                return
+            }
+            let listener = try NWListener(using: parameters, on: endpointPort)
             if advertiseBonjour {
                 // Advertising is also what reliably prompts for local network permission on
                 // iOS; without the prompt, the listener accepts nothing and says nothing.
@@ -137,7 +143,7 @@ private final class HTTPSession: @unchecked Sendable {
 
             case .incomplete:
                 do {
-                    guard let chunk = try await receive() else { return }
+                    guard let chunk = try await nextChunk() else { return }
                     parser.feed(chunk)
                 } catch {
                     return
@@ -146,32 +152,47 @@ private final class HTTPSession: @unchecked Sendable {
         }
     }
 
+    /// A read started while a request was being handled, still in flight when it finished.
+    ///
+    /// There is never more than one receive outstanding on the connection, and only `serve`
+    /// touches the parser. An earlier version let a watchdog task feed the parser while
+    /// `serve` was reading it — a data race on a value type, invisible with curl, which opens
+    /// one connection per request, and live with the OpenAI client, which keeps connections
+    /// open and sends request after request down them.
+    private var pendingRead: Task<Data?, Error>?
+
+    /// The next bytes from the peer, continuing a read already in flight rather than issuing
+    /// a second one beside it.
+    private func nextChunk() async throws -> Data? {
+        if let read = pendingRead {
+            pendingRead = nil
+            return try await read.value
+        }
+        return try await receive()
+    }
+
     /// Runs the handler while watching the socket, so that a client hanging up mid-request
     /// cancels the work instead of leaving it to finish into the void.
+    ///
+    /// The watch is a single read that only reports. If the peer closes while the work runs,
+    /// the work is cancelled; if bytes arrive instead — a pipelined request — they wait in the
+    /// read's result until `serve` asks for them, and it is `serve` that feeds them in.
     private func runHandler(for request: HTTPRequestMessage) async -> HTTPResponseMessage {
         let work = Task { await handler(request) }
 
-        let watchdog = Task { [self] in
-            while !Task.isCancelled {
-                do {
-                    guard let chunk = try await receive() else {
-                        // Clean EOF while we were working: the client is gone.
-                        work.cancel()
-                        return
-                    }
-                    // Pipelined bytes for the next request. Keep them; the loop will parse
-                    // them once this response is out.
-                    parser.feed(chunk)
-                } catch {
-                    work.cancel()
-                    return
-                }
+        let read = Task { [self] () throws -> Data? in
+            do {
+                let chunk = try await receive()
+                if chunk == nil { work.cancel() }   // clean EOF: the client is gone
+                return chunk
+            } catch {
+                work.cancel()
+                throw error
             }
         }
+        pendingRead = read
 
-        let response = await work.value
-        watchdog.cancel()
-        return response
+        return await work.value
     }
 
     private func receive() async throws -> Data? {

@@ -32,16 +32,49 @@ struct SelfTest: Sendable {
 
         // The engine's own words, last lines first in usefulness: when a load fails this is
         // where the reason is, and it is the only part of this report that needs no model.
-        report["engine_log"] = LLMBridge.recentEngineLog().suffix(60)
+        report["engine_log"] = Array(LLMBridge.recentEngineLog().suffix(80))
 
         report["chat_template"] = await checkChatTemplate()
         report["image_tokens"] = await checkImageTokens()
         report["grammar"] = checkGrammars()
         report["constrained_generation"] = await checkConstrainedGeneration()
 
+        // Sanitised and validated before serialising, never handed over raw.
+        //
+        // JSONSerialization does not throw on a value it cannot encode: it raises an
+        // Objective-C exception, which `try?` does not catch, and the process dies. An
+        // ArraySlice in this report did exactly that on every call — the self-test, the one
+        // tool for finding out why the app crashes, was itself crashing the app.
+        let safe = Self.jsonSafe(report)
         let options: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        return (try? JSONSerialization.data(withJSONObject: report, options: options))
-            ?? Data("{\"error\":\"could not serialise the report\"}".utf8)
+        guard JSONSerialization.isValidJSONObject(safe),
+              let data = try? JSONSerialization.data(withJSONObject: safe, options: options) else {
+            return Data("{\"error\":\"the self-test report could not be serialised\"}".utf8)
+        }
+        return data
+    }
+
+    /// Reduces any value to the handful of types JSONSerialization accepts.
+    ///
+    /// Anything unrecognised becomes its description rather than reaching the serialiser,
+    /// and non-finite numbers become null: a NaN tokens-per-second figure is another value
+    /// JSONSerialization answers with an exception rather than an error.
+    static func jsonSafe(_ value: Any) -> Any {
+        switch value {
+        case is NSNull:                   return value
+        case let v as String:             return v
+        case let v as Bool:               return v
+        case let v as Int:                return v
+        case let v as Int64:              return NSNumber(value: v)
+        case let v as UInt64:             return NSNumber(value: v)
+        case let v as Double:             return v.isFinite ? v : NSNull()
+        case let v as Float:              return v.isFinite ? Double(v) : NSNull()
+        case let v as [String: Any]:      return v.mapValues { jsonSafe($0) }
+        case let v as [Any]:              return v.map { jsonSafe($0) }
+        case let v as ArraySlice<String>: return Array(v)
+        case let v as NSNumber:           return v
+        default:                          return String(describing: value)
+        }
     }
 
     // MARK: Checks
