@@ -533,3 +533,32 @@ final class CapturedText: @unchecked Sendable {
     var value: String? { lock.lock(); defer { lock.unlock() }; return stored }
     func set(_ text: String) { lock.lock(); stored = text; lock.unlock() }
 }
+
+/// Projectors from different repositories share a file name, and a mismatched projector
+/// aborts the app, so each is saved under a name that says which model it belongs to.
+final class ProjectorNamingTests: XCTestCase {
+
+    private func name(_ url: String) -> String { ModelCatalog.localFileName(for: URL(string: url)!) }
+
+    func testGenericProjectorNamesGetTheRepositoryName() {
+        XCTAssertEqual(name("https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf"),
+                       "gemma-4-E2B-it-mmproj-F16.gguf")
+        XCTAssertEqual(name("https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-F16.gguf?download=true"),
+                       "Qwen3-VL-4B-Instruct-mmproj-F16.gguf")
+    }
+
+    func testNamesThatAlreadySayWhichModelStayAsTheyAre() {
+        XCTAssertEqual(name("https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf"),
+                       "mmproj-gemma-4-E2B-it-Q8_0.gguf")
+        XCTAssertEqual(name("https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf"),
+                       "gemma-4-E2B-it-Q4_K_M.gguf")
+        XCTAssertEqual(name("https://example.com/files/mmproj-F16.gguf"), "mmproj-F16.gguf")
+    }
+
+    @MainActor
+    func testTheStoredNamePairsWithItsModel() {
+        let projector = name("https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf")
+        XCTAssertGreaterThanOrEqual(
+            ModelStore.sharedPrefixLength("gemma-4-e2b-it-q4_k_m.gguf", projector.lowercased()), 8)
+    }
+}

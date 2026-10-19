@@ -89,10 +89,15 @@ final class ModelStore {
             // text model — and it does so for files downloaded before this rule existed,
             // because it reads names the catalogue already holds.
             if let entry = ModelCatalog.entry(forModelFile: model.name) {
-                guard let projectorName = entry.projectorURL?.lastPathComponent else {
+                guard let projectorURL = entry.projectorURL else {
                     return ModelPair(model: model, projector: nil)
                 }
-                let projector = projectors.first { $0.name == projectorName }
+                // The stored name, or for the original entries the bare one that builds before
+                // 1.2 saved it under. Not for newer entries: a bare `mmproj-F16.gguf` could be
+                // any model's, and a mismatched projector aborts the app.
+                var names = [ModelCatalog.localFileName(for: projectorURL)]
+                if entry.acceptsBareProjectorName { names.append(projectorURL.lastPathComponent) }
+                let projector = names.lazy.compactMap { name in projectors.first { $0.name == name } }.first
                 return ModelPair(model: model, projector: projector, projectorIsAmbiguous: false)
             }
 
@@ -147,6 +152,29 @@ enum ModelCatalog {
         let modelURL: URL
         let projectorURL: URL?
         let approximateBytes: UInt64
+        /// Entries from before 1.2, whose projectors may be on the device under the bare name.
+        var acceptsBareProjectorName = false
+    }
+
+    /// The name a download is saved under.
+    ///
+    /// The file's own name, except for a projector whose name does not say which model it
+    /// belongs to. Publishers call them `mmproj-F16.gguf` in every repository, so a second
+    /// download would overwrite the first, and pairing by name would be a guess. Those are
+    /// prefixed with the repository's name: `unsloth/gemma-4-E2B-it-GGUF/…/mmproj-F16.gguf`
+    /// is saved as `gemma-4-E2B-it-mmproj-F16.gguf`, next to `gemma-4-E2B-it-Q4_K_M.gguf`.
+    static func localFileName(for url: URL) -> String {
+        let file = url.lastPathComponent
+        let parts = url.pathComponents   // ["/", org, repo, "resolve", revision, …, file]
+        guard file.lowercased().contains("mmproj"),
+              url.host?.lowercased().hasSuffix("huggingface.co") == true,
+              parts.count >= 6, parts[3] == "resolve" else { return file }
+        var stem = parts[2]
+        for suffix in ["-GGUF", "-gguf", "_GGUF", "_gguf"] where stem.hasSuffix(suffix) {
+            stem = String(stem.dropLast(suffix.count))
+        }
+        guard !stem.isEmpty, !file.lowercased().contains(stem.lowercased()) else { return file }
+        return "\(stem)-\(file)"
     }
 
     /// The catalogue entry a downloaded model file came from, matched by file name.
@@ -160,14 +188,23 @@ enum ModelCatalog {
               detail: "The reference pair. 2.49 GB model, 851 MB projector.",
               modelURL: URL(string: "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf")!,
               projectorURL: URL(string: "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/mmproj-model-f16.gguf")!,
-              approximateBytes: 3_340_000_000),
+              approximateBytes: 3_340_000_000,
+              acceptsBareProjectorName: true),
 
         Entry(id: "gemma-3-4b-it-q8",
               title: "gemma-3-4b-it · Q8_0 + mmproj",
               detail: "Same weights at a larger quantisation. For comparing quantisation cost, not for matching the reference numbers.",
               modelURL: URL(string: "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q8_0.gguf")!,
               projectorURL: URL(string: "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/mmproj-model-f16.gguf")!,
-              approximateBytes: 5_200_000_000),
+              approximateBytes: 5_200_000_000,
+              acceptsBareProjectorName: true),
+
+        Entry(id: "gemma-4-e2b-it-q4km",
+              title: "gemma-4-E2B-it · Q4_K_M + mmproj",
+              detail: "Gemma 4, prompted through its own Jinja template. 3.11 GB model, 986 MB projector.",
+              modelURL: URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf")!,
+              projectorURL: URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf")!,
+              approximateBytes: 4_092_000_000),
 
         Entry(id: "gemma-3-1b-it-q4km",
               title: "gemma-3-1b-it · Q4_K_M (text only)",

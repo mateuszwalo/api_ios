@@ -78,7 +78,7 @@ final class ModelDownloader: NSObject {
     // MARK: Control
 
     func enqueue(url: URL, as name: String? = nil) {
-        let destinationName = name ?? url.lastPathComponent
+        let destinationName = name ?? ModelCatalog.localFileName(for: url)
         let job = DownloadJob(id: UUID(), url: url, destinationName: destinationName, state: .waiting)
         jobs.append(job)
         startTask(for: job, resuming: nil)
@@ -152,7 +152,10 @@ final class ModelDownloader: NSObject {
     fileprivate func jobID(for task: URLSessionTask) -> UUID? { tasks[task.taskIdentifier] }
 
     fileprivate func finish(_ jobID: UUID, movingFrom location: URL, suggested: String) {
-        let destination = destinationDirectory.appendingPathComponent(suggested)
+        // The name chosen at enqueue time wins over the server's: Hugging Face suggests the
+        // bare file name, and projectors from different repositories share it.
+        let name = jobs.first { $0.id == jobID }?.destinationName ?? suggested
+        let destination = destinationDirectory.appendingPathComponent(name)
         do {
             try? FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: destination.path) {
