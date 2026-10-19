@@ -77,7 +77,8 @@ final class ModelDownloader: NSObject {
 
     // MARK: Control
 
-    func enqueue(url: URL, as name: String? = nil) {
+    func enqueue(url pasted: URL, as name: String? = nil) {
+        let url = ModelCatalog.downloadURL(for: pasted)
         let destinationName = name ?? ModelCatalog.localFileName(for: url)
         let job = DownloadJob(id: UUID(), url: url, destinationName: destinationName, state: .waiting)
         jobs.append(job)

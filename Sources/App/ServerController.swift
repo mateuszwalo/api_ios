@@ -202,9 +202,30 @@ final class ServerController {
         let models: [String]
         let footprintBytes: UInt64
         let availableMemoryBytes: UInt64
+        /// Every GGUF on the device and how models were paired with projectors: what a
+        /// "the projector does not load" report needs, readable without the device in hand.
+        var files: [FileInfo] = []
+        var pairs: [PairInfo] = []
+
+        struct FileInfo: Encodable {
+            let name: String
+            let bytes: UInt64
+            let projector: Bool
+        }
+
+        struct PairInfo: Encodable {
+            let model: String
+            let projector: String?
+            let projectorIsAmbiguous: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case model, projector
+                case projectorIsAmbiguous = "projector_is_ambiguous"
+            }
+        }
 
         enum CodingKeys: String, CodingKey {
-            case ok, error, vision, configuration, settings, models
+            case ok, error, vision, configuration, settings, models, files, pairs
             case loadedModel = "loaded_model"
             case footprintBytes = "footprint_bytes"
             case availableMemoryBytes = "available_memory_bytes"
@@ -220,7 +241,10 @@ final class ServerController {
                             settings: settings,
                             models: store.pairs.map(\.name),
                             footprintBytes: MemoryProbe.footprintBytes(),
-                            availableMemoryBytes: MemoryProbe.availableBytes())
+                            availableMemoryBytes: MemoryProbe.availableBytes(),
+                            files: store.files.map { .init(name: $0.name, bytes: $0.sizeBytes, projector: $0.isProjector) },
+                            pairs: store.pairs.map { .init(model: $0.name, projector: $0.projector?.name,
+                                                           projectorIsAmbiguous: $0.projectorIsAmbiguous) })
     }
 
     /// Reconfigures and reloads from the network, so a parameter sweep runs from a laptop

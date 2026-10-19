@@ -97,18 +97,24 @@ final class ModelStore {
                 // any model's, and a mismatched projector aborts the app.
                 var names = [ModelCatalog.localFileName(for: projectorURL)]
                 if entry.acceptsBareProjectorName { names.append(projectorURL.lastPathComponent) }
-                let projector = names.lazy.compactMap { name in projectors.first { $0.name == name } }.first
-                return ModelPair(model: model, projector: projector, projectorIsAmbiguous: false)
+                if let exact = names.lazy.compactMap({ name in projectors.first { $0.name == name } }).first {
+                    return ModelPair(model: model, projector: exact, projectorIsAmbiguous: false)
+                }
+                // Not the catalogue's own projector file, but one that names this model: the
+                // BF16 variant, or the same projector from another publisher. Only a match by
+                // name; guessing is what the catalogue rule exists to prevent.
+                return ModelPair(model: model, projector: Self.namedProjector(for: model, among: projectors),
+                                 projectorIsAmbiguous: false)
             }
 
             // A file from outside the catalogue: pair by name, and say when it is a guess.
+            if let named = Self.namedProjector(for: model, among: projectors) {
+                return ModelPair(model: model, projector: named, projectorIsAmbiguous: false)
+            }
             let projector = Self.bestProjector(for: model, among: projectors)
-            let named = projector.map {
-                Self.sharedPrefixLength(model.name.lowercased(), $0.name.lowercased()) >= 8
-            } ?? false
             // One projector and one model is unambiguous whatever they are called. More than
             // one model and nothing in the names to go on is a guess, and says so.
-            let ambiguous = projector != nil && !named && models.count > 1
+            let ambiguous = projector != nil && models.count > 1
             return ModelPair(model: model, projector: projector, projectorIsAmbiguous: ambiguous)
         }
     }
@@ -131,6 +137,30 @@ final class ModelStore {
             sharedPrefixLength(modelName, a.name.lowercased()) <
             sharedPrefixLength(modelName, b.name.lowercased())
         }
+    }
+
+    /// The projector whose name says it belongs to this model, or nil when none clearly does.
+    ///
+    /// Names are compared by letters and digits only, with "mmproj" taken out, so
+    /// `mmproj-gemma-4-E2B-it-Q8_0`, `gemma-4-E2B-it-mmproj-F16` and `gemma-4-E2B-it-Q4_K_M` all
+    /// start `gemma4e2bit`. Ten characters in common is the bar: `gemma34bit` passes, while a
+    /// 4B model and a 12B projector share only `gemma3`. A tie between two projectors is no
+    /// answer either.
+    static func namedProjector(for model: ModelFile, among projectors: [ModelFile]) -> ModelFile? {
+        let modelKey = nameKey(model.name)
+        let scored = projectors.map { ($0, sharedPrefixLength(modelKey, nameKey($0.name))) }
+        guard let best = scored.max(by: { $0.1 < $1.1 }), best.1 >= 10,
+              scored.filter({ $0.1 == best.1 }).count == 1 else { return nil }
+        return best.0
+    }
+
+    /// A file name reduced to what identifies the model: lowercase letters and digits, without
+    /// the extension and without "mmproj".
+    static func nameKey(_ fileName: String) -> String {
+        var name = fileName.lowercased()
+        if name.hasSuffix(".gguf") { name.removeLast(5) }
+        name = name.replacingOccurrences(of: "mmproj", with: "")
+        return String(name.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(Character.init))
     }
 
     static func sharedPrefixLength(_ a: String, _ b: String) -> Int {
@@ -163,6 +193,16 @@ enum ModelCatalog {
     /// download would overwrite the first, and pairing by name would be a guess. Those are
     /// prefixed with the repository's name: `unsloth/gemma-4-E2B-it-GGUF/…/mmproj-F16.gguf`
     /// is saved as `gemma-4-E2B-it-mmproj-F16.gguf`, next to `gemma-4-E2B-it-Q4_K_M.gguf`.
+    /// Hugging Face's page link for a file (`/blob/`) serves HTML, not the file. Pasting it is
+    /// the usual mistake, so it is turned into the download link (`/resolve/`).
+    static func downloadURL(for url: URL) -> URL {
+        guard url.host?.lowercased().hasSuffix("huggingface.co") == true,
+              url.path.contains("/blob/"),
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        parts.path = parts.path.replacingOccurrences(of: "/blob/", with: "/resolve/")
+        return parts.url ?? url
+    }
+
     static func localFileName(for url: URL) -> String {
         let file = url.lastPathComponent
         let parts = url.pathComponents   // ["/", org, repo, "resolve", revision, …, file]

@@ -555,10 +555,42 @@ final class ProjectorNamingTests: XCTestCase {
         XCTAssertEqual(name("https://example.com/files/mmproj-F16.gguf"), "mmproj-F16.gguf")
     }
 
+    private func file(_ name: String) -> ModelFile {
+        ModelFile(url: URL(fileURLWithPath: "/models/" + name), sizeBytes: 1)
+    }
+
     @MainActor
-    func testTheStoredNamePairsWithItsModel() {
-        let projector = name("https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf")
-        XCTAssertGreaterThanOrEqual(
-            ModelStore.sharedPrefixLength("gemma-4-e2b-it-q4_k_m.gguf", projector.lowercased()), 8)
+    private func paired(_ model: String, _ projectors: [String]) -> String? {
+        ModelStore.namedProjector(for: file(model), among: projectors.map(file))?.name
+    }
+
+    @MainActor
+    func testProjectorsPairWithTheModelTheirNameSays() {
+        let stored = name("https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf")
+        let all = [stored, "mmproj-model-f16.gguf", "Qwen3-VL-4B-Instruct-mmproj-F16.gguf"]
+        XCTAssertEqual(paired("gemma-4-E2B-it-Q4_K_M.gguf", all), stored)
+        XCTAssertEqual(paired("gemma-4-E2B-it-Q4_K_M.gguf", ["mmproj-gemma-4-E2B-it-Q8_0.gguf"]),
+                       "mmproj-gemma-4-E2B-it-Q8_0.gguf")
+        XCTAssertEqual(paired("Qwen3VL-4B-Instruct-Q4_K_M.gguf", all), "Qwen3-VL-4B-Instruct-mmproj-F16.gguf")
+        XCTAssertEqual(paired("gemma-3-4b-it-Q4_K_M.gguf", ["gemma-3-4b-it-mmproj-model-f16.gguf"]),
+                       "gemma-3-4b-it-mmproj-model-f16.gguf")
+    }
+
+    @MainActor
+    func testNoPairingWhenTheNamesDoNotSaySo() {
+        // A 4B model and a 12B projector share only "gemma3".
+        XCTAssertNil(paired("gemma-3-4b-it-Q4_K_M.gguf", ["gemma-3-12b-it-mmproj-F16.gguf"]))
+        XCTAssertNil(paired("gemma-4-E2B-it-Q4_K_M.gguf", ["mmproj-F16.gguf", "mmproj-model-f16.gguf"]))
+        // Two equally good candidates are no answer.
+        XCTAssertNil(paired("gemma-4-E2B-it-Q4_K_M.gguf",
+                            ["gemma-4-E2B-it-mmproj-F16.gguf", "gemma-4-E2B-it-mmproj-BF16.gguf"]))
+    }
+
+    func testPageLinksBecomeDownloadLinks() {
+        let page = URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/blob/main/mmproj-F16.gguf")!
+        XCTAssertEqual(ModelCatalog.downloadURL(for: page).absoluteString,
+                       "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf")
+        let direct = URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf")!
+        XCTAssertEqual(ModelCatalog.downloadURL(for: direct), direct)
     }
 }
