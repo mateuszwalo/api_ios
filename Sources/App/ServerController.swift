@@ -371,7 +371,10 @@ final class ServerController {
             availableMemoryBytes: MemoryProbe.availableBytes(),
             thermalState: MemoryProbe.thermalStateName(),
             uptimeSeconds: startedAt.map { Int(Date().timeIntervalSince($0)) } ?? 0,
-            lastError: loadError)
+            lastError: loadError,
+            gpuAllocatedBytes: MemoryProbe.gpuAllocatedBytes(),
+            gpuWorkingSetBytes: MemoryProbe.gpuWorkingSetBytes(),
+            chatTemplate: await engine.isLoaded ? await engine.chatTemplateStatus : nil)
     }
 
     private func startTicker() {

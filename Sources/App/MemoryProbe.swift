@@ -12,6 +12,11 @@ enum MemoryProbe {
 
     static func availableBytes() -> UInt64 { LLMBridge.availableMemoryBytes() }
 
+    /// Bytes allocated through Metal — the GPU's share of the footprint, not extra to it.
+    static func gpuAllocatedBytes() -> UInt64 { LLMBridge.gpuAllocatedBytes() }
+
+    static func gpuWorkingSetBytes() -> UInt64 { LLMBridge.gpuRecommendedWorkingSetBytes() }
+
     static func thermalStateName() -> String {
         switch ProcessInfo.processInfo.thermalState {
         case .nominal:  return "nominal"

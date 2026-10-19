@@ -431,3 +431,105 @@ actor StubEngine: InferenceEngine {
                             hitTokenLimit: promptTokens + request.maxTokens >= context)
     }
 }
+
+// MARK: - Raw schema extraction
+
+final class RawJSONTests: XCTestCase {
+
+    private func schema(_ body: String) -> String? {
+        RawJSON.string(at: ["response_format", "json_schema", "schema"], in: Data(body.utf8))
+    }
+
+    /// The point of the exercise: the schema comes back with its keys in the order written.
+    func testSchemaKeepsItsKeyOrder() throws {
+        let body = """
+        {"model":"m","messages":[],"response_format":{"type":"json_schema","json_schema":
+          {"name":"R","schema":{"properties":{"b":{"type":"string"},"a":{"type":"string"}},"required":["b","a"]}}}}
+        """
+        let text = try XCTUnwrap(schema(body))
+        let b = try XCTUnwrap(text.range(of: "\"b\""))
+        let a = try XCTUnwrap(text.range(of: "\"a\""))
+        XCTAssertLessThan(b.lowerBound, a.lowerBound)
+        XCTAssertTrue(text.hasPrefix("{\"properties\""))
+        XCTAssertTrue(text.hasSuffix("]}"))
+    }
+
+    /// Braces and quotes inside strings must not unbalance the scan. The client's schemas
+    /// carry long descriptions with exactly this kind of punctuation in them.
+    func testStringsWithBracesAndEscapedQuotesAreSkippedWhole() throws {
+        let body = #"""
+        {"response_format":{"json_schema":{"description":"a } tricky { one \" here",
+          "schema":{"description":"keep {this} and \"that\"","type":"string"}}}}
+        """#
+        let text = try XCTUnwrap(schema(body))
+        XCTAssertEqual(text, #"{"description":"keep {this} and \"that\"","type":"string"}"#)
+    }
+
+    /// Keys before the target, of every value kind, are stepped over correctly.
+    func testValuesBeforeTheTargetAreSkipped() throws {
+        let body = """
+        {"n":1.5e3,"t":true,"z":null,"arr":[{"x":[1,2,{"y":"]"}]}],
+         "response_format":{"type":"json_schema","json_schema":{"strict":false,"schema":{"k":1}}}}
+        """
+        XCTAssertEqual(schema(body), #"{"k":1}"#)
+    }
+
+    func testMissingPathGivesNil() {
+        XCTAssertNil(schema(#"{"messages":[]}"#))
+        XCTAssertNil(schema(#"{"response_format":{"type":"json_object"}}"#))
+    }
+
+    /// Whitespace inside the schema is kept: the text is passed through, not re-serialised.
+    func testWhitespaceIsPreserved() throws {
+        let body = "{\"response_format\":{\"json_schema\":{\"schema\": {\n  \"type\" : \"object\"\n}}}}"
+        XCTAssertEqual(schema(body), "{\n  \"type\" : \"object\"\n}")
+    }
+}
+
+// MARK: - Schema order through the handler
+
+final class SchemaOrderTests: XCTestCase {
+
+    /// The text the grammar compiler receives is the raw schema, in the client's key order —
+    /// not a re-serialisation of the decoded schema, which would have sorted it.
+    func testCompilerReceivesTheSchemaInRequestOrder() async throws {
+        let body = """
+        {"messages":[{"role":"user","content":"hi"}],
+         "response_format":{"type":"json_schema","json_schema":{"name":"R",
+           "schema":{"properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}},"required":["zeta","alpha"]}}}}
+        """
+        var request = try JSONDecoder().decode(ChatCompletionRequest.self, from: Data(body.utf8))
+        request.rawResponseFormatSchema =
+            RawJSON.string(at: ["response_format", "json_schema", "schema"], in: Data(body.utf8))
+
+        let received = CapturedText()
+        let handler = ChatCompletionsHandler(engine: StubEngine(loaded: true), queue: InferenceQueue(),
+                                             grammarCompiler: { text in received.set(text); return "root ::= \"x\"" },
+                                             defaultMaxTokens: 100)
+        _ = try await handler.handle(request)
+
+        let text = try XCTUnwrap(received.value)
+        let zeta = try XCTUnwrap(text.range(of: "zeta"))
+        let alpha = try XCTUnwrap(text.range(of: "alpha"))
+        XCTAssertLessThan(zeta.lowerBound, alpha.lowerBound, "the schema reached the compiler re-ordered: \(text)")
+    }
+
+    /// reasoning_effort "none" turns thinking off; anything else leaves the template's default.
+    func testReasoningEffortNoneDisablesThinking() throws {
+        func request(_ effort: String?) throws -> ChatCompletionRequest {
+            let field = effort.map { ",\"reasoning_effort\":\"\($0)\"" } ?? ""
+            return try JSONDecoder().decode(ChatCompletionRequest.self,
+                                            from: Data("{\"messages\":[]\(field)}".utf8))
+        }
+        XCTAssertEqual(try request("none").thinkingEnabled, false)
+        XCTAssertNil(try request("low").thinkingEnabled)
+        XCTAssertNil(try request(nil).thinkingEnabled)
+    }
+}
+
+final class CapturedText: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: String?
+    var value: String? { lock.lock(); defer { lock.unlock() }; return stored }
+    func set(_ text: String) { lock.lock(); stored = text; lock.unlock() }
+}

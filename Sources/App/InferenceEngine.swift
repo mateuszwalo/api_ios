@@ -31,6 +31,10 @@ struct EnginePrompt: Sendable {
         let images: [ImagePayload]
     }
     let turns: [Turn]
+    /// Renders the template with `enable_thinking=false`. Part of the prompt rather than of the
+    /// generation options because it changes the rendered text, and the token count measured
+    /// before generation must be of the same text that is then generated from.
+    var disableThinking = false
 }
 
 struct EngineRequest: Sendable {
@@ -56,6 +60,8 @@ struct EngineResult: Sendable {
     var cachedPromptTokens: Int = 0
     /// A short description of the settings the engine ran under, echoed into the response.
     var configuration: String = ""
+    /// "jinja", or "built-in (...)" with the reason the model's Jinja template was not used.
+    var templateEngine: String = ""
 
     /// Over the tokens actually evaluated. With prefix reuse most of a prompt may come from
     /// the cache, and dividing the whole prompt by the time spent on its tail would report a

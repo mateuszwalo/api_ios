@@ -69,19 +69,28 @@ odrzuca, wiec martwa galaz i tak musi sie skompilowac — i to ona wywalila buil
 **`json_schema_to_grammar` bierze `common_json`, nie nlohmanna.** llama.cpp niesie wlasny
 typ JSON i to on jest w tym interfejsie.
 
-**Konsekwencja, ktora trzeba zapisac uczciwie: kolejnosc wlasciwosci w gramatyce jest
-alfabetyczna, nie taka jak w schemacie.** Konwerter generuje reguly obiektow w kolejnosci,
-w jakiej widzi wlasciwosci. Po naszej stronie ta kolejnosc ginie juz przy dekodowaniu —
-`JSONValue` trzyma obiekt jako slownik Swifta, a slowniki Foundation sa nieuporzadkowane —
-wiec `serialized()` sortuje klucze, zeby wynik byl powtarzalny i zeby ten sam schemat
-zapisany inaczej trafial w ten sam wpis cache'u. Gramatyka wymusza wiec wypisywanie pol
-alfabetycznie.
+**Kolejnosc wlasciwosci w gramatyce jest taka jak w schemacie (od wersji 1.2).**
+Konwerter generuje reguly obiektow w kolejnosci, w jakiej widzi wlasciwosci. Do wersji 1.1
+schemat przechodzil przez dekodowanie do slownika Swifta i ponowne zakodowanie z sortowaniem
+kluczy, wiec gramatyka wymuszala kolejnosc alfabetyczna. Zalozenie, ze to nieszkodliwe, bo
+parser klienta jest obojetny na kolejnosc, okazalo sie bledne: kolejnosc pol to kolejnosc,
+w jakiej model *mysli*. Schemat zaczynajacy sie od `name` kaze modelowi najpierw przepisac
+nazwe, potem ja sklasyfikowac; alfabetycznie model wypelnial `categories` i `components`,
+zanim napisal, co klasyfikuje, i zgadywal. Zmierzone przez klienta: ok. 20 pkt na 100.
 
-Jest to bezpieczne, bo parser po stronie klienta idzie przez Pydantic i jest obojetny na
-kolejnosc kluczy (potwierdzone). Zapisane, bo to odstepstwo od literalnego schematu:
-`enum`, `required` i `minItems` sa egzekwowane dokladnie, kolejnosc pol — nie. Gdyby
-kiedys zaczela miec znaczenie, trzeba by przekazywac do konwertera surowy tekst schematu
-wyciety z ciala zadania, z pominieciem dekodowania.
+Teraz do konwertera trafia **surowy tekst schematu wyciety z ciala zadania** (`RawJSON`),
+bez dekodowania. Pamiec podreczna gramatyk jest kluczowana dokladnie tym tekstem — celowo
+nie wersja posortowana: dwa schematy rozniace sie tylko kolejnoscia ograniczaja odpowiedz
+inaczej, wiec musza dostac dwie rozne gramatyki.
+
+**Szablon czatu: Jinja z metadanych GGUF, wbudowane formaty jako zapas (od wersji 1.2).**
+`llama_chat_apply_template` rozpoznaje tylko ustalona liste formatow po wygladzie szablonu;
+szablonu Gemmy 4 na niej nie ma i kazde zapytanie konczylo sie pustym promptem. Prompt jest
+teraz skladany przez wykonanie szablonu Jinja (`common_chat_templates_apply`) — tego samego,
+ktory wykonuje runtime odniesienia. Gdy Jinja sie nie powiedzie, uzywane sa formaty
+wbudowane, a powod trafia do `timings.template`. `reasoning_effort: "none"` ustawia w
+szablonie `enable_thinking=false`. Wiodacy BOS: `common_chat_templates_apply` usuwa go, gdy
+slownik dodaje BOS przy tokenizacji, a tokenizacja dodatkowo pilnuje, zeby nie bylo dwoch.
 
 **llama.cpp nie jest submodulem** — skrypt klonuje przypiety tag shallow. Repo zostaje
 male, a klucz cache'u CI to wprost zawartosc `LLAMA_CPP_TAG`.

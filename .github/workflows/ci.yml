@@ -70,7 +70,9 @@ jobs:
           xcodebuild -scheme LocalLLMServer -configuration Release -sdk iphoneos \
             -derivedDataPath build/dd \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            ENABLE_BITCODE=NO 2>&1 | tee device.log
+            ENABLE_BITCODE=NO \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            LLM_BUILD_COMMIT=${GITHUB_SHA::7} 2>&1 | tee device.log
 
       - name: Package IPA
         run: |
@@ -101,6 +103,17 @@ jobs:
           zip -qry LocalLLMServer.ipa Payload
           ls -lh LocalLLMServer.ipa
           echo "llama.cpp: $(cat build/LlamaCpp.xcframework/BUILD_INFO 2>/dev/null || echo cached)"
+          # The build number is what testers quote with every measurement, so check that the
+          # stamp actually reached the binary rather than trusting the build setting.
+          PLIST=Payload/LocalLLMServer.app/Info.plist
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$PLIST")
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" "$PLIST")
+          COMMIT=$(/usr/libexec/PlistBuddy -c "Print LLMBuildCommit" "$PLIST")
+          echo "app: $VERSION (build $BUILD, $COMMIT)"
+          if [ "$BUILD" != "${{ github.run_number }}" ] || [ -z "$COMMIT" ]; then
+            echo "!! the IPA is not stamped with this run's build number and commit" >&2
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

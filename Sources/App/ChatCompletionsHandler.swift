@@ -83,7 +83,11 @@ struct ChatCompletionsHandler: Sendable {
                            prefillTps: result.prefillTokensPerSecond,
                            decodeTps: result.decodeTokensPerSecond,
                            cachedTokens: result.cachedPromptTokens,
-                           config: result.configuration.isEmpty ? nil : result.configuration)
+                           config: result.configuration.isEmpty ? nil : result.configuration,
+                           template: result.templateEngine.isEmpty ? nil : result.templateEngine,
+                           footprintBytes: MemoryProbe.footprintBytes(),
+                           gpuAllocatedBytes: MemoryProbe.gpuAllocatedBytes(),
+                           build: AppVersion.description)
         )
     }
 
@@ -114,7 +118,9 @@ struct ChatCompletionsHandler: Sendable {
         guard !turns.isEmpty else {
             throw Failure(status: 400, message: "messages must not be empty")
         }
-        return EnginePrompt(turns: turns)
+        // reasoning_effort "none" turns thinking off, as the reference server does; it used to
+        // be ignored, and reasoning models opened every answer with a thinking block.
+        return EnginePrompt(turns: turns, disableThinking: request.thinkingEnabled == false)
     }
 
     private func compileGrammar(_ request: ChatCompletionRequest) throws -> String? {
@@ -132,7 +138,14 @@ struct ChatCompletionsHandler: Sendable {
                               code: "invalid_response_format")
             }
             do {
-                return try grammarCompiler(spec.schema.serialized())
+                // The raw text, not a re-serialisation: the grammar follows the order of the
+                // schema's properties, and a decoded-and-re-encoded schema has lost it. The
+                // compiler caches by exactly this text, so two schemas that differ only in key
+                // order get two grammars — as they must, since they constrain the output
+                // differently. Caching on a sorted form would hand one of them the other's
+                // grammar.
+                let schemaText = try request.rawResponseFormatSchema ?? spec.schema.serialized()
+                return try grammarCompiler(schemaText)
             } catch {
                 // Never fall back to describing the schema in the prompt. A silent
                 // degradation produces output that looks right and is no longer

@@ -78,10 +78,11 @@ actor LlamaInferenceEngine: InferenceEngine {
 
     func measurePrompt(_ prompt: EnginePrompt) async throws -> Int {
         let turns = Self.turns(from: prompt)
+        let disableThinking = prompt.disableThinking
         do {
             return try await onWorker { [bridge] in
                 var error: NSError?
-                let n = bridge.measurePromptTokens(turns, error: &error)
+                let n = bridge.measurePromptTokens(turns, disableThinking: disableThinking, error: &error)
                 if n < 0 { throw error ?? EngineError.backend("tokenisation failed") }
                 return n
             }
@@ -94,7 +95,36 @@ actor LlamaInferenceEngine: InferenceEngine {
     /// seeing the text is the only way to settle a template mismatch.
     func renderedPromptText(_ prompt: EnginePrompt) async -> String? {
         let turns = Self.turns(from: prompt)
-        return try? await onWorker { [bridge] in bridge.renderedPrompt(for: turns) }
+        let disableThinking = prompt.disableThinking
+        return try? await onWorker { [bridge] in
+            bridge.renderedPrompt(turns: turns, disableThinking: disableThinking)
+        }
+    }
+
+    /// Whether the loaded model's prompts are built from its Jinja template, and if not, why.
+    var chatTemplateStatus: String { bridge.chatTemplateStatus }
+
+    /// The same conversation rendered by the Jinja template and by the built-in formats.
+    struct TemplateComparison: Sendable {
+        let jinjaTokens: Int
+        let builtinTokens: Int
+        let jinjaPrompt: String?
+        let builtinPrompt: String?
+        let jinjaError: String?
+        let builtinError: String?
+    }
+
+    func templateComparison(_ prompt: EnginePrompt) async -> TemplateComparison? {
+        let turns = Self.turns(from: prompt)
+        return try? await onWorker { [bridge] in
+            let report = bridge.templateComparison(turns: turns)
+            return TemplateComparison(jinjaTokens: (report["jinja_tokens"] as? Int) ?? -1,
+                                      builtinTokens: (report["builtin_tokens"] as? Int) ?? -1,
+                                      jinjaPrompt: report["jinja_prompt"] as? String,
+                                      builtinPrompt: report["builtin_prompt"] as? String,
+                                      jinjaError: report["jinja_error"] as? String,
+                                      builtinError: report["builtin_error"] as? String)
+        }
     }
 
     func generate(_ request: EngineRequest) async throws -> EngineResult {
@@ -105,6 +135,7 @@ actor LlamaInferenceEngine: InferenceEngine {
         opts.grammar = request.grammar
         opts.stopSequences = request.stopSequences
         opts.seed = request.seed.map { Int64($0) } ?? -1
+        opts.disableThinking = request.prompt.disableThinking
 
         let imageCount = request.prompt.turns.reduce(0) { $0 + $1.images.count }
         LLMBridge.noteEvent("generate start: max_tokens=\(request.maxTokens)"
@@ -130,7 +161,8 @@ actor LlamaInferenceEngine: InferenceEngine {
                                         prefillMilliseconds: r.prefillMilliseconds,
                                         decodeMilliseconds: r.decodeMilliseconds,
                                         hitTokenLimit: r.hitTokenLimit,
-                                        cachedPromptTokens: r.cachedPromptTokens)
+                                        cachedPromptTokens: r.cachedPromptTokens,
+                                        templateEngine: r.templateEngine)
                 }
             } onCancel: {
                 cancelled.set()

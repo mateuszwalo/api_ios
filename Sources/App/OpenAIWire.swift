@@ -32,11 +32,29 @@ struct ChatCompletionRequest: Decodable {
 
     var generationLimit: Int? { maxCompletionTokens ?? maxTokens }
 
+    /// `"none"` turns a reasoning model's thinking off, which is what the reference server does
+    /// when it receives it. Anything else, or absence, leaves the template's own default.
+    let reasoningEffort: String?
+
+    /// Thinking is switched off only by an explicit "none".
+    var thinkingEnabled: Bool? {
+        guard let effort = reasoningEffort?.lowercased() else { return nil }
+        return effort == "none" ? false : nil
+    }
+
+    /// The schema exactly as written in the request body, set by the router after decoding.
+    ///
+    /// Decoding the schema into `JSONValue` loses the order of its keys, and the grammar then
+    /// forces the model to emit fields alphabetically instead of in the order the client
+    /// designed. This is the text the converter receives; see `RawJSON`.
+    var rawResponseFormatSchema: String? = nil
+
     enum CodingKeys: String, CodingKey {
         case model, messages, temperature, stream, stop, seed
         case responseFormat = "response_format"
         case maxCompletionTokens = "max_completion_tokens"
         case maxTokens = "max_tokens"
+        case reasoningEffort = "reasoning_effort"
     }
 
     struct Message: Decodable {
@@ -189,6 +207,16 @@ struct ChatCompletionResponse: Encodable {
         /// The settings this response was produced under. When configurations are compared,
         /// every result says which one it came from, and no spreadsheet has to remember it.
         var config: String? = nil
+        /// How the prompt was built: "jinja", or "built-in (...)" with the reason the model's
+        /// own template was not used. Two engines can render one conversation differently.
+        var template: String? = nil
+        /// Process memory after the request (what the system's memory limit counts) and the
+        /// GPU's share of it. Memory is unified on Apple silicon: the GPU bytes are part of the
+        /// footprint, not added to it.
+        var footprintBytes: UInt64? = nil
+        var gpuAllocatedBytes: UInt64? = nil
+        /// The app build that produced this response, so a measurement can be traced to it.
+        var build: String? = nil
 
         enum CodingKeys: String, CodingKey {
             case prefillMs = "prefill_ms"
@@ -196,7 +224,9 @@ struct ChatCompletionResponse: Encodable {
             case prefillTps = "prefill_tps"
             case decodeTps = "decode_tps"
             case cachedTokens = "cached_tokens"
-            case config
+            case config, template, build
+            case footprintBytes = "footprint_bytes"
+            case gpuAllocatedBytes = "gpu_allocated_bytes"
         }
     }
 }

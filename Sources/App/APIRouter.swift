@@ -57,9 +57,13 @@ struct APIRouter: Sendable {
         let queueDepth = await queue.depth
         let redactedRequest = BodyRedactor.redact(String(decoding: http.body, as: UTF8.self))
 
-        let decoded: ChatCompletionRequest
+        var decoded: ChatCompletionRequest
         do {
             decoded = try JSONDecoder().decode(ChatCompletionRequest.self, from: http.body)
+            // The schema's own text, keys in the order the client wrote them. Decoding has
+            // already validated the body, so this only has to find where the value lies.
+            decoded.rawResponseFormatSchema =
+                RawJSON.string(at: ["response_format", "json_schema", "schema"], in: http.body)
         } catch {
             let message = "request body is not a valid chat completion: \(error)"
             await logFailure(path: http.path, status: 400, message: message, started: started,
@@ -181,8 +185,19 @@ struct StatsSnapshot: Codable, Sendable {
     /// who can read the screen and the person who can fix the code are rarely the same one,
     /// and retyping a message from a photograph of an iPad loses the details that matter.
     let lastError: String?
+    /// GPU memory through Metal: what is allocated now, and the device's recommended ceiling.
+    /// Part of the footprint above, not extra to it — memory is unified on this hardware.
+    var gpuAllocatedBytes: UInt64 = 0
+    var gpuWorkingSetBytes: UInt64 = 0
+    /// Which model template engine is in use for the loaded model, and the app build.
+    var chatTemplate: String? = nil
+    var appVersion: String = AppVersion.description
 
     enum CodingKeys: String, CodingKey {
+        case gpuAllocatedBytes = "gpu_allocated_bytes"
+        case gpuWorkingSetBytes = "gpu_working_set_bytes"
+        case chatTemplate = "chat_template"
+        case appVersion = "app_version"
         case modelLoaded = "model_loaded"
         case model
         case contextLength = "context_length"

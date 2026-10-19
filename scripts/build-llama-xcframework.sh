@@ -51,8 +51,13 @@ stage_headers() {
   echo "==> staging headers"
   cp "$SRC"/include/*.h "$hdr/"
   cp "$SRC"/ggml/include/*.h "$hdr/"
-  cp "$SRC"/common/*.h "$hdr/" 2>/dev/null || true
-  cp "$SRC"/common/*.hpp "$hdr/" 2>/dev/null || true
+  # common/ with its subdirectories, keeping their layout. chat.h includes "jinja/parser.h"
+  # and friends by relative path, so flattening the tree would leave those includes
+  # unresolvable — exactly what happened when only common/*.h was copied.
+  (cd "$SRC/common" && find . \( -name '*.h' -o -name '*.hpp' \) -print) | while read -r header; do
+    mkdir -p "$hdr/$(dirname "$header")"
+    cp "$SRC/common/$header" "$hdr/$header"
+  done
 
   local mtmd_dir=""
   for candidate in "$SRC/tools/mtmd" "$SRC/mtmd" "$SRC/examples/llava"; do
@@ -206,7 +211,7 @@ build_slice() {
     exit 1
   fi
   local missing=""
-  for symbol in json_schema_to_grammar llama_sampler_init_grammar mtmd_tokenize llama_model_chat_template; do
+  for symbol in json_schema_to_grammar llama_sampler_init_grammar mtmd_tokenize llama_model_chat_template common_chat_templates_init common_chat_templates_apply; do
     # A here-string, not a pipe. `grep -q` exits the moment it matches, which closes the
     # pipe under a still-writing `echo`; with `set -o pipefail` that SIGPIPE becomes the
     # pipeline's status, so a found symbol reports as missing. The check said all four were

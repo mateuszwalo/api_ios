@@ -28,6 +28,8 @@ struct SelfTest: Sendable {
             "footprint_bytes": MemoryProbe.footprintBytes(),
             "available_memory_bytes": MemoryProbe.availableBytes(),
             "thermal_state": MemoryProbe.thermalStateName(),
+            "gpu_allocated_bytes": MemoryProbe.gpuAllocatedBytes(),
+            "app_version": AppVersion.description,
         ]
 
         // The engine's own words, last lines first in usefulness: when a load fails this is
@@ -106,17 +108,49 @@ struct SelfTest: Sendable {
             .init(role: "system", text: "You are a helpful assistant.", images: []),
             .init(role: "user", text: "Say OK.", images: []),
         ])
-        guard let rendered = await engine.renderedPromptText(prompt) else {
+        guard await engine.isLoaded else {
             return ["ok": false, "detail": "no model is loaded"]
         }
-        let expected = ["<start_of_turn>", "<end_of_turn>"]
-        let present = expected.filter { rendered.contains($0) }
+        // Any model, not just Gemma 3: the check is that the model's template renders at all.
+        // Checking for Gemma 3's turn markers made every other model fail this test while
+        // working perfectly. The rendered text is still returned in full, because a template
+        // that renders but renders differently from the reference is invisible otherwise.
+        guard let rendered = await engine.renderedPromptText(prompt), !rendered.isEmpty else {
+            // Measuring surfaces the reason the template produced nothing.
+            var reason = "the chat template produced no prompt"
+            do { _ = try await engine.measurePrompt(prompt) } catch { reason = "\(error)" }
+            return ["ok": false, "detail": reason, "engine": await engine.chatTemplateStatus]
+        }
+        var thinkingOff = prompt
+        thinkingOff.disableThinking = true
+        let renderedThinkingOff = await engine.renderedPromptText(thinkingOff) ?? ""
+
+        // The same conversation through both engines. Before 1.2 every prompt went through the
+        // built-in formats, so this difference is what prompt_tokens shows against those builds.
+        var comparison: [String: Any] = [:]
+        if let c = await engine.templateComparison(prompt) {
+            comparison = [
+                "jinja_tokens": c.jinjaTokens,
+                "builtin_tokens": c.builtinTokens,
+                "same_tokens": c.jinjaTokens >= 0 && c.jinjaTokens == c.builtinTokens,
+                "same_text": c.jinjaPrompt != nil && c.jinjaPrompt == c.builtinPrompt,
+                "builtin_prompt": c.builtinPrompt.map { $0 as Any } ?? NSNull(),
+                "jinja_error": c.jinjaError.map { $0 as Any } ?? NSNull(),
+                "builtin_error": c.builtinError.map { $0 as Any } ?? NSNull(),
+                "note": "builtin is how versions before 1.2 built every prompt. builtin_tokens -1 means "
+                    + "the old versions could not prompt this model at all (Gemma 4, for one).",
+            ]
+        }
         return [
-            "ok": present.count == expected.count,
+            "ok": true,
+            "engine": await engine.chatTemplateStatus,
             "rendered": rendered,
-            "expected_markers": expected,
-            "markers_found": present,
-            "note": "Gemma 3 turn markers. Their absence means the GGUF carries a different template than the reference runtime applies.",
+            "rendered_with_thinking_off": renderedThinkingOff,
+            "thinking_switch_changes_prompt": renderedThinkingOff != rendered,
+            "versus_previous_versions": comparison,
+            "note": "rendered is what the model receives for a system + user turn. "
+                + "thinking_switch_changes_prompt is true for templates that honour enable_thinking "
+                + "(reasoning models); for others it is false and reasoning_effort has no effect.",
         ]
     }
 

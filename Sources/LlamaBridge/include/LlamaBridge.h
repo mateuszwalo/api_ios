@@ -73,6 +73,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSArray<NSString *> *stopSequences;
 /// Negative means unset; the sampler then uses its own default seeding.
 @property (nonatomic) int64_t seed;
+/// YES renders the template with thinking switched off (`enable_thinking=false`), for
+/// reasoning models that would otherwise open every answer with a thinking block.
+@property (nonatomic) BOOL disableThinking;
 + (instancetype)defaults;
 @end
 
@@ -88,6 +91,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Reported so a prefill rate can be computed over the tokens actually processed: dividing
 /// the whole prompt by a prefill that skipped most of it overstates the speed many times.
 @property (nonatomic, readonly) NSInteger cachedPromptTokens;
+/// How the prompt was built: "jinja", or "built-in" with the reason Jinja was not used.
+@property (nonatomic, readonly) NSString *templateEngine;
 @end
 
 #pragma mark - Bridge
@@ -144,17 +149,38 @@ typedef NS_ENUM(NSInteger, LLMBridgeErrorCode) {
 /// quality problem and is in fact a configuration one.
 @property (nonatomic, readonly) BOOL supportsImages;
 
+/// Which chat template the loaded model's prompts are built with: its Jinja template from the
+/// GGUF metadata, or — when that could not be parsed — llama.cpp's built-in formats, with the
+/// reason. Reported because the two can render the same conversation differently.
+@property (nonatomic, readonly) NSString *chatTemplateStatus;
+
 /// Token count for a prompt, images included, without generating anything.
-/// Returns -1 on failure and populates `error`.
+/// Returns -1 on failure and populates `error`. `disableThinking` must match the generation
+/// it is measuring for, because the template renders differently with thinking off.
 - (NSInteger)measurePromptTokens:(NSArray<LLMTurn *> *)turns
-                           error:(NSError **)error;
+                 disableThinking:(BOOL)disableThinking
+                           error:(NSError **)error
+    NS_SWIFT_NAME(measurePromptTokens(_:disableThinking:error:));
 
 /// The prompt exactly as the chat template renders it, for inspection.
 ///
 /// Exposed because a template mismatch is invisible from the outside: the same weights with
 /// a different turn marker produce different output, and the difference looks like a
 /// hardware or quantisation effect. Seeing the rendered text settles it in one glance.
-- (nullable NSString *)renderedPromptForTurns:(NSArray<LLMTurn *> *)turns;
+- (nullable NSString *)renderedPromptForTurns:(NSArray<LLMTurn *> *)turns
+                              disableThinking:(BOOL)disableThinking
+    NS_SWIFT_NAME(renderedPrompt(turns:disableThinking:));
+
+/// Renders a text-only conversation through the Jinja template and through the built-in
+/// formats separately, and reports each one's prompt and token count.
+///
+/// Versions before 1.2 used the built-in formats only, so the difference between the two is
+/// the difference a model's prompt_tokens will show against those versions — measurable for
+/// any model the moment it is loaded, without the old build at hand. Keys: jinja_tokens,
+/// builtin_tokens (-1 when that engine produced nothing), jinja_prompt, builtin_prompt,
+/// jinja_error, builtin_error.
+- (NSDictionary<NSString *, id> *)templateComparisonForTurns:(NSArray<LLMTurn *> *)turns
+    NS_SWIFT_NAME(templateComparison(turns:));
 
 /// Runs one generation to completion. Blocking: callers serialise it and keep it off the
 /// main thread. `isCancelled` is polled between tokens so a departed client stops costing
@@ -187,6 +213,14 @@ typedef NS_ENUM(NSInteger, LLMBridgeErrorCode) {
 
 /// Bytes still available before this process reaches its limit.
 + (uint64_t)availableMemoryBytes;
+
+/// Bytes currently allocated on the GPU through Metal — the closest thing this device has to
+/// "VRAM in use". Memory is unified on Apple silicon, so these bytes are part of the process
+/// footprint, not in addition to it; reported so the GPU's share can be seen on its own.
++ (uint64_t)gpuAllocatedBytes;
+
+/// The GPU's recommended maximum working set, the practical ceiling on the above.
++ (uint64_t)gpuRecommendedWorkingSetBytes;
 
 @end
 

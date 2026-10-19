@@ -139,4 +139,57 @@ final class GrammarTests: XCTestCase {
             XCTAssertFalse(stripped.isEmpty, "a vector must carry something besides its annotation")
         }
     }
+
+    // MARK: - Property order
+
+    /// The line defining `rule`, e.g. "root ::= ...".
+    private func ruleLine(_ rule: String, in grammar: String) throws -> String {
+        try XCTUnwrap(grammar.split(separator: "\n").first { $0.hasPrefix("\(rule) ::=") }.map(String.init),
+                      "no rule named \(rule) in:\n\(grammar)")
+    }
+
+    private func assertOrder(_ first: String, before second: String, in line: String,
+                             file: StaticString = #filePath, lineNumber: UInt = #line) {
+        guard let a = line.range(of: first), let b = line.range(of: second) else {
+            return XCTFail("\(first) or \(second) missing from: \(line)", file: file, line: lineNumber)
+        }
+        XCTAssertLessThan(a.lowerBound, b.lowerBound,
+                          "\(first) must come before \(second) in: \(line)", file: file, line: lineNumber)
+    }
+
+    /// The grammar follows the order in which the schema lists its properties — `b` first
+    /// here, not the alphabetical `a`. The client designs that order on purpose: a model that
+    /// writes the name before the categories classifies what it has read, and one forced the
+    /// other way round guesses. Measured by the client at around 20 points out of 100.
+    func testGrammarFollowsTheSchemasPropertyOrder() throws {
+        let grammar = try compile("""
+        {"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}},"required":["b","a"]}
+        """)
+        assertOrder("b-kv", before: "a-kv", in: try ruleLine("root", in: grammar))
+    }
+
+    /// The same inside $defs, which is where the client's real schemas keep their objects.
+    func testPropertyOrderHoldsInsideDefs() throws {
+        let grammar = try compile("""
+        {"$defs":{"Item":{"type":"object","properties":{"name":{"type":"string"},"categories":{"type":"string"}},
+                          "required":["name","categories"]}},
+         "type":"object","properties":{"item":{"$ref":"#/$defs/Item"}},"required":["item"]}
+        """)
+        let itemRule = try XCTUnwrap(grammar.split(separator: "\n")
+            .first { $0.contains("Item ::=") }.map(String.init), "no Item rule in:\n\(grammar)")
+        assertOrder("name-kv", before: "categories-kv", in: itemRule)
+    }
+
+    /// Two schemas that differ only in key order constrain the output differently, so they
+    /// must produce different grammars — which also means the grammar cache must not key them
+    /// on a sorted form, or one would be served the other's grammar.
+    func testKeyOrderAloneChangesTheGrammar() throws {
+        let ba = try compile("""
+        {"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}},"required":["b","a"]}
+        """)
+        let ab = try compile("""
+        {"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"]}
+        """)
+        XCTAssertNotEqual(ba, ab)
+    }
 }

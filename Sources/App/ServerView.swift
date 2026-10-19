@@ -13,6 +13,7 @@ struct ServerView: View {
         NavigationStack {
             Form {
                 Section("Status") {
+                    LabeledContent("App build", value: AppVersion.description)
                     LabeledContent("Server", value: statusText)
                     if let pair = controller.selectedPair {
                         LabeledContent("Model", value: pair.name)

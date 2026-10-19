@@ -71,11 +71,20 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.localllm.server
         CODE_SIGN_ENTITLEMENTS: Sources/App/LocalLLMServer.entitlements
+        # Raised by hand with each release. CI overrides the build number with its run
+        # number and LLM_BUILD_COMMIT with the commit, so a released IPA always names both;
+        # a local build reports commit "dev". See AppVersion.swift.
+        MARKETING_VERSION: "1.2"
+        CURRENT_PROJECT_VERSION: "0"
+        LLM_BUILD_COMMIT: ""
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
     info:
       path: Sources/App/Info.plist
       properties:
         CFBundleDisplayName: LocalLLM Server
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LLMBuildCommit: "$(LLM_BUILD_COMMIT)"
         UIFileSharingEnabled: true                    # drop a .gguf in over Files
         LSSupportsOpeningDocumentsInPlace: true
         NSLocalNetworkUsageDescription: "LocalLLM Server exposes an OpenAI-compatible HTTP endpoint on your local network so other devices can send inference requests to this iPad."

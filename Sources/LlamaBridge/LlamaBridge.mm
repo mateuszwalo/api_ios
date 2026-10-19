@@ -19,6 +19,12 @@
 // Pulls in common_json. llama.cpp replaced nlohmann in this interface: the converter now
 // takes the project's own JSON type, so there is no nlohmann include here any more.
 #include "json-schema-to-grammar.h"
+// Chat templates executed as Jinja, from the model's own GGUF metadata. llama_chat_apply_template
+// only recognises a fixed list of formats by their appearance; Gemma 4's template is not on it,
+// and every request then failed with an empty prompt even though the model had loaded.
+#include "chat.h"
+
+#import <Metal/Metal.h>
 
 NSErrorDomain const LLMBridgeErrorDomain = @"LLMBridgeErrorDomain";
 
@@ -207,6 +213,31 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
                            userInfo:@{NSLocalizedDescriptionKey: message ?: @"unknown error"}];
 }
 
+#pragma mark - Prompt rendering result
+
+// What rendering a conversation produced, and how. Kept together so the caller can report the
+// engine that was used and, when nothing could be rendered, why — "the chat template produced
+// no prompt" on its own told nobody that the real cause was an unrecognised template format.
+struct RenderedPrompt {
+    std::string text;
+    bool hasImages = false;
+    std::string engine;                   // "jinja", or "built-in (...)" with the reason
+    std::string failure;                  // set only when text is empty
+    std::vector<std::string> extraStops;  // stop strings the template declares
+};
+
+typedef NS_ENUM(NSInteger, TemplateMode) {
+    TemplateModeAuto = 0,        // Jinja, falling back to the built-in formats
+    TemplateModeJinjaOnly = 1,
+    TemplateModeBuiltInOnly = 2,
+};
+
+static std::string TokenText(const llama_vocab *vocab, llama_token token) {
+    char buffer[128];
+    const int32_t n = llama_token_to_piece(vocab, token, buffer, sizeof(buffer), 0, true);
+    return n > 0 ? std::string(buffer, n) : std::string();
+}
+
 #pragma mark - Pinned API notes
 
 // This file is written against the exact llama.cpp tag in LLAMA_CPP_TAG, and the few places
@@ -264,6 +295,7 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
     o.grammar = nil;
     o.stopSequences = @[];
     o.seed = -1;
+    o.disableThinking = NO;
     return o;
 }
 @end
@@ -276,6 +308,7 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
 @property (nonatomic, readwrite) NSInteger decodeMilliseconds;
 @property (nonatomic, readwrite) BOOL hitTokenLimit;
 @property (nonatomic, readwrite) NSInteger cachedPromptTokens;
+@property (nonatomic, readwrite) NSString *templateEngine;
 @end
 
 @implementation LLMGenerationResult
@@ -294,6 +327,10 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
     // with reuse on, and only for text: it is what a new prompt is compared against to find
     // the prefix that need not be evaluated again. Emptied whenever the cache is.
     std::vector<llama_token> _cachedTokens;
+    // The model's Jinja chat template, parsed once per load. Null when it could not be parsed;
+    // prompts are then built with llama.cpp's built-in formats and _chatTemplateError says why.
+    common_chat_templates_ptr _chatTemplates;
+    std::string _chatTemplateError;
 }
 
 - (instancetype)init {
@@ -514,6 +551,20 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
             }
         }
 
+        // Parse the model's Jinja chat template. A failure is not fatal: the built-in formats
+        // still cover the common models, and the reason is kept for the status and the logs.
+        _chatTemplates.reset();
+        _chatTemplateError.clear();
+        try {
+            _chatTemplates = common_chat_templates_init(_model, "");
+        } catch (const std::exception &e) {
+            _chatTemplateError = e.what();
+        } catch (...) {
+            _chatTemplateError = "unknown error";
+        }
+        AppendLogLine(_chatTemplates ? "APP: chat template: jinja"
+                                     : ("APP: chat template: built-in only, jinja failed: " + _chatTemplateError).c_str());
+
         _modelPath = [modelPath copy];
         return YES;
     } @finally {
@@ -533,6 +584,8 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
     if (_model) { llama_model_free(_model); _model = nullptr; }
     _modelPath = nil;
     _cachedTokens.clear();
+    _chatTemplates.reset();
+    _chatTemplateError.clear();
 }
 
 - (BOOL)isLoaded { return _ctx != nullptr; }
@@ -548,11 +601,25 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
 /// hand-written Gemma template differing by one token from the one the reference runtime
 /// applies produces different output from identical weights, and that difference would be
 /// read as a hardware effect rather than as the bug it is.
-- (std::string)renderPrompt:(NSArray<LLMTurn *> *)turns hasImages:(BOOL *)outHasImages {
+///
+/// The model's Jinja template is executed first — the same template, with the same variables,
+/// that the reference runtime runs. llama.cpp's built-in formats are the fallback, used only
+/// when the Jinja template cannot be parsed or executed, and the reason travels with the
+/// result. `disableThinking` sets the template's `enable_thinking` to false.
+- (RenderedPrompt)renderTurns:(NSArray<LLMTurn *> *)turns disableThinking:(BOOL)disableThinking {
+    return [self renderTurns:turns disableThinking:disableThinking mode:TemplateModeAuto];
+}
+
+/// `mode` picks the engine: Jinja with the built-in formats as fallback (what requests use),
+/// or one of the two alone — which the self-test uses to show how far apart they render the
+/// same conversation, the built-in path being the one versions before 1.2 used.
+- (RenderedPrompt)renderTurns:(NSArray<LLMTurn *> *)turns
+              disableThinking:(BOOL)disableThinking
+                         mode:(TemplateMode)mode {
+    RenderedPrompt out;
     std::vector<std::string> roles, contents;
     roles.reserve(turns.count);
     contents.reserve(turns.count);
-    BOOL any = NO;
 
     const char *marker = mtmd_default_marker();
     for (LLMTurn *turn in turns) {
@@ -563,14 +630,54 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         for (NSUInteger i = 0; i < turn.images.count; i++) {
             content += marker;
             content += "\n";
-            any = YES;
+            out.hasImages = true;
         }
         content += turn.text.UTF8String ? turn.text.UTF8String : "";
         roles.push_back(turn.role.UTF8String ? turn.role.UTF8String : "user");
         contents.push_back(content);
     }
-    if (outHasImages) *outHasImages = any;
 
+    // ---- Jinja, from the GGUF ----
+    std::string jinjaFailure;
+    if (mode == TemplateModeBuiltInOnly) {
+        jinjaFailure = "not attempted";
+    } else if (_chatTemplates) {
+        try {
+            common_chat_templates_inputs inputs;
+            for (size_t i = 0; i < roles.size(); i++) {
+                common_chat_msg message;
+                message.role = roles[i];
+                message.content = contents[i];
+                inputs.messages.push_back(message);
+            }
+            inputs.add_generation_prompt = true;
+            inputs.use_jinja = true;
+            inputs.enable_thinking = !disableThinking;
+            // The leading BOS is stripped by the apply call when the vocabulary adds one at
+            // tokenisation, so the prompt is tokenised with add_special as before and carries
+            // exactly one BOS. tokenizeText still guards against a doubled one.
+            common_chat_params params = common_chat_templates_apply(_chatTemplates.get(), inputs);
+            if (!params.prompt.empty()) {
+                out.text = params.prompt;
+                out.engine = "jinja";
+                out.extraStops = params.additional_stops;
+                return out;
+            }
+            jinjaFailure = "the template rendered an empty prompt";
+        } catch (const std::exception &e) {
+            jinjaFailure = e.what();
+        } catch (...) {
+            jinjaFailure = "unknown error";
+        }
+    } else {
+        jinjaFailure = _chatTemplateError.empty() ? "no template could be parsed" : _chatTemplateError;
+    }
+
+    // ---- built-in formats, as the fallback ----
+    if (mode == TemplateModeJinjaOnly) {
+        out.failure = "jinja: " + jinjaFailure;
+        return out;
+    }
     std::vector<llama_chat_message> messages;
     messages.reserve(roles.size());
     for (size_t i = 0; i < roles.size(); i++) {
@@ -586,8 +693,14 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         needed = llama_chat_apply_template(tmpl, messages.data(), messages.size(),
                                            true, buf.data(), (int32_t)buf.size());
     }
-    if (needed < 0) return std::string();
-    return std::string(buf.data(), needed);
+    if (needed > 0) {
+        out.text = std::string(buf.data(), needed);
+        out.engine = "built-in (jinja: " + jinjaFailure + ")";
+        return out;
+    }
+    out.failure = "the chat template produced no prompt. Jinja: " + jinjaFailure +
+                  "; built-in formats: this template is not one of them";
+    return out;
 }
 
 - (std::vector<llama_token>)tokenizeText:(const std::string &)text {
@@ -599,23 +712,34 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         llama_tokenize(vocab, text.c_str(), (int32_t)text.size(),
                        tokens.data(), (int32_t)tokens.size(), true, true);
     }
+    // One BOS, never two. A template that writes its own BOS into the text, tokenised with
+    // add_special, starts with a doubled one — a different prompt from the reference, one
+    // token longer, with outputs to match. The Jinja path strips it already; this is the
+    // guard for templates and vocabularies that do not follow that convention.
+    const llama_token bos = llama_vocab_bos(vocab);
+    if (bos != LLAMA_TOKEN_NULL && tokens.size() >= 2 && tokens[0] == bos && tokens[1] == bos) {
+        tokens.erase(tokens.begin());
+    }
     return tokens;
 }
 
 #pragma mark Token measurement
 
-- (NSInteger)measurePromptTokens:(NSArray<LLMTurn *> *)turns error:(NSError **)error {
+- (NSInteger)measurePromptTokens:(NSArray<LLMTurn *> *)turns
+                 disableThinking:(BOOL)disableThinking
+                           error:(NSError **)error {
     [_lock lock];
     @try {
         if (!_ctx) {
             if (error) *error = MakeError(LLMBridgeErrorNotLoaded, @"no model is loaded");
             return -1;
         }
-        BOOL hasImages = NO;
-        std::string prompt = [self renderPrompt:turns hasImages:&hasImages];
+        RenderedPrompt rendered = [self renderTurns:turns disableThinking:disableThinking];
+        const std::string &prompt = rendered.text;
+        const BOOL hasImages = rendered.hasImages;
         if (prompt.empty()) {
             if (error) *error = MakeError(LLMBridgeErrorTokenizeFailed,
-                                          @"the chat template produced no prompt");
+                                          [NSString stringWithUTF8String:rendered.failure.c_str()]);
             return -1;
         }
         if (!hasImages) {
@@ -637,17 +761,51 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
     }
 }
 
-- (nullable NSString *)renderedPromptForTurns:(NSArray<LLMTurn *> *)turns {
+- (nullable NSString *)renderedPromptForTurns:(NSArray<LLMTurn *> *)turns
+                              disableThinking:(BOOL)disableThinking {
     [_lock lock];
     @try {
         if (!_model) return nil;
-        BOOL hasImages = NO;
-        std::string prompt = [self renderPrompt:turns hasImages:&hasImages];
-        if (prompt.empty()) return nil;
-        return [NSString stringWithUTF8String:prompt.c_str()];
+        RenderedPrompt rendered = [self renderTurns:turns disableThinking:disableThinking];
+        if (rendered.text.empty()) return nil;
+        return [NSString stringWithUTF8String:rendered.text.c_str()];
     } @finally {
         [_lock unlock];
     }
+}
+
+- (NSDictionary<NSString *, id> *)templateComparisonForTurns:(NSArray<LLMTurn *> *)turns {
+    [_lock lock];
+    @try {
+        if (!_model) return @{@"error": @"no model is loaded"};
+        NSMutableDictionary<NSString *, id> *report = [NSMutableDictionary dictionary];
+        const TemplateMode modes[] = {TemplateModeJinjaOnly, TemplateModeBuiltInOnly};
+        NSArray<NSString *> *names = @[@"jinja", @"builtin"];
+        for (NSUInteger i = 0; i < names.count; i++) {
+            NSString *name = names[i];
+            RenderedPrompt rendered = [self renderTurns:turns disableThinking:NO mode:modes[i]];
+            if (rendered.text.empty()) {
+                report[[name stringByAppendingString:@"_tokens"]] = @(-1);
+                report[[name stringByAppendingString:@"_error"]] =
+                    [NSString stringWithUTF8String:rendered.failure.c_str()] ?: @"";
+            } else {
+                report[[name stringByAppendingString:@"_tokens"]] =
+                    @((NSInteger)[self tokenizeText:rendered.text].size());
+                report[[name stringByAppendingString:@"_prompt"]] =
+                    [NSString stringWithUTF8String:rendered.text.c_str()] ?: @"";
+            }
+        }
+        return report;
+    } @finally {
+        [_lock unlock];
+    }
+}
+
+- (NSString *)chatTemplateStatus {
+    if (!_model) return @"no model loaded";
+    if (_chatTemplates) return @"jinja (the model's own template, from its GGUF metadata)";
+    return [NSString stringWithFormat:@"built-in formats only; the Jinja template failed to parse: %s",
+            _chatTemplateError.c_str()];
 }
 
 - (NSInteger)tokenizeMultimodal:(NSArray<LLMTurn *> *)turns
@@ -684,7 +842,14 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
     // bitmap count disagrees with the marker count, and every request with an image is
     // refused. That would have been every stage-1 request.
     text.text_len = prompt.size();
-    text.add_special = true;
+    // Add a BOS only if the prompt does not already open with one, for the same reason as in
+    // tokenizeText: a doubled BOS is a different prompt from the one the reference runs.
+    {
+        const llama_vocab *vocab = llama_model_get_vocab(_model);
+        const llama_token bos = llama_vocab_bos(vocab);
+        const std::string bosText = bos != LLAMA_TOKEN_NULL ? TokenText(vocab, bos) : std::string();
+        text.add_special = bosText.empty() || prompt.rfind(bosText, 0) != 0;
+    }
     text.parse_special = true;
 
     int32_t rc = mtmd_tokenize(_mtmd, chunks, &text,
@@ -725,12 +890,23 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         const llama_vocab *vocab = llama_model_get_vocab(_model);
         const uint64_t tStart = clock_gettime_nsec_np(CLOCK_MONOTONIC);
 
-        BOOL hasImages = NO;
-        std::string prompt = [self renderPrompt:turns hasImages:&hasImages];
+        RenderedPrompt rendered = [self renderTurns:turns disableThinking:options.disableThinking];
+        const std::string prompt = rendered.text;
+        const BOOL hasImages = rendered.hasImages;
         if (prompt.empty()) {
+            // The reason, not just the verdict: an unrecognised template format and a template
+            // that threw are different problems with different fixes.
             if (error) *error = MakeError(LLMBridgeErrorTokenizeFailed,
-                                          @"the chat template produced no prompt");
+                                          [NSString stringWithUTF8String:rendered.failure.c_str()]);
             return nil;
+        }
+        // Stop strings: the caller's, plus any the template declares for its own format.
+        std::vector<std::string> stops;
+        for (NSString *stop in options.stopSequences) {
+            if (stop.length > 0 && stop.UTF8String) stops.emplace_back(stop.UTF8String);
+        }
+        for (const auto &stop : rendered.extraStops) {
+            if (!stop.empty()) stops.push_back(stop);
         }
         if (hasImages && !_mtmd) {
             if (error) *error = MakeError(LLMBridgeErrorImageRejected,
@@ -929,10 +1105,8 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
             completion++;
 
             BOOL stopped = NO;
-            for (NSString *stop in options.stopSequences) {
-                const char *s = stop.UTF8String;
-                if (s == nullptr || *s == '\0') continue;
-                size_t at = out.rfind(s);
+            for (const auto &stop : stops) {
+                size_t at = out.rfind(stop);
                 if (at != std::string::npos) {
                     out.erase(at);
                     stopped = YES;
@@ -975,6 +1149,7 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
         result.decodeMilliseconds = (NSInteger)((tEnd - tFirstToken) / 1000000ULL);
         result.hitTokenLimit = hitLimit;
         result.cachedPromptTokens = cachedPromptTokens;
+        result.templateEngine = [NSString stringWithUTF8String:rendered.engine.c_str()] ?: @"";
         completed = YES;
         return result;
     } @finally {
@@ -1030,6 +1205,26 @@ static NSError *MakeError(LLMBridgeErrorCode code, NSString *message) {
 
 + (uint64_t)availableMemoryBytes {
     return os_proc_available_memory();
+}
+
+// The system default device is the one ggml's Metal backend uses: there is one GPU, and Metal
+// hands back the same device object for it throughout the process, so its counters cover every
+// buffer llama.cpp has allocated.
+static id<MTLDevice> SharedMetalDevice(void) {
+    static id<MTLDevice> device;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ device = MTLCreateSystemDefaultDevice(); });
+    return device;
+}
+
++ (uint64_t)gpuAllocatedBytes {
+    id<MTLDevice> device = SharedMetalDevice();
+    return device ? (uint64_t)device.currentAllocatedSize : 0;
+}
+
++ (uint64_t)gpuRecommendedWorkingSetBytes {
+    id<MTLDevice> device = SharedMetalDevice();
+    return device ? (uint64_t)device.recommendedMaxWorkingSetSize : 0;
 }
 
 @end
